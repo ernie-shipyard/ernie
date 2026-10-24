@@ -25,7 +25,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from elevenlabs.client import ElevenLabs
 
-from foldback import live, advise, persona, hum2midi
+from foldback import live, advise, persona, hum2midi, samples
 
 load_dotenv()
 
@@ -307,8 +307,10 @@ async def midi_hum(audio: UploadFile = File(...), add_track: bool = Form(True)):
     except ValueError as e:
         raise HTTPException(400, str(e))
     track = live.create_midi_track("foldback melody") if add_track else None
-    return {"midi": f"/midi/{mid_id}", "info": info, "track": track,
-            "say": f"{info['note_count']} notes at {info['tempo']} bpm. Drag the file onto the new track. You hummed in {info['notes'][0] if info['notes'] else '?'}, roughly."}
+    instrument = samples.suggest_for_melody(info.pop("pitches"))
+    return {"midi": f"/midi/{mid_id}", "info": info, "track": track, "instrument": instrument,
+            "say": f"{info['note_count']} notes at {info['tempo']} bpm, starting around {info['notes'][0] if info['notes'] else '?'}. "
+                   f"That register wants {instrument}. Drag the file onto the new track."}
 
 
 @app.post("/midi/beatbox")
@@ -321,8 +323,89 @@ async def midi_beatbox(audio: UploadFile = File(...), add_track: bool = Form(Tru
     except ValueError as e:
         raise HTTPException(400, str(e))
     track = live.create_midi_track("foldback drums") if add_track else None
-    return {"midi": f"/midi/{mid_id}", "info": info, "track": track,
-            "say": f"{info['hits']} hits: {info['kick']} kicks, {info['snare']} snares, {info['hat']} hats at {info['tempo']} bpm. Load a Drum Rack on the new track and drop this in."}
+    onsets, types, y = info.pop("_onsets"), info.pop("_types"), info.pop("_y")
+    matches = samples.match_hits(y, onsets, types, samples.index()) if os.getenv("SAMPLE_DIRS") else {}
+    picks = ", ".join(f"{k}: {v[0]['name']}" for k, v in matches.items() if v)
+    return {"midi": f"/midi/{mid_id}", "info": info, "track": track, "samples": matches,
+            "say": f"{info['hits']} hits: {info['kick']} kicks, {info['snare']} snares, {info['hat']} hats at {info['tempo']} bpm. "
+                   + (f"From your library I'd load {picks}." if picks else "Load a Drum Rack on the new track and drop this in.")}
+
+
+# ---------------------------------------------------------------- sample library
+
+@app.post("/samples/scan")
+def samples_scan(force: bool = Form(False)):
+    idx = samples.index(force=force)
+    return {k: v for k, v in idx.items() if k != "items"} | {"sample_names": [i["name"] for i in idx.get("items", [])][:200]}
+
+
+@app.post("/samples/match")
+async def samples_match(audio: UploadFile = File(...), k: int = Form(3)):
+    """One sound in -> closest samples out. Works for a single beatboxed hit or an uploaded one-shot."""
+    raw = await audio.read()
+    y = hum2midi.load(_to_wav(raw))
+    f = samples.features(y)
+    if not f:
+        raise HTTPException(400, "Too short to fingerprint.")
+    idx = samples.index()
+    return {"guess": samples.tag(f), "features": f, "matches": samples.nearest(f, idx.get("items", []), k=k)}
+
+
+# ---------------------------------------------------------------- JUCE plugin ingest (team contract)
+# The plugin POSTs here from its worker thread. Never from processBlock().
+# Metrics are keyed by the label the producer gave that plugin instance ("Master", "Kick", "Bass"...).
+
+LATEST = {}   # label -> {"metrics": {...}, "notes": [...], "ts": float}
+
+
+@app.post("/ingest/metrics")
+async def ingest_metrics(payload: dict):
+    """{"label": "Master", "metrics": {"peak_dbfs":..,"rms_dbfs":..,"crest_factor_db":..,"stereo_correlation":..,"bands":{...}}}"""
+    import time
+    label = payload.get("label", "Master")
+    LATEST[label] = {"metrics": payload.get("metrics", {}), "notes": [], "ts": time.time()}
+    return {"ok": True, "label": label}
+
+
+@app.post("/ingest/audio")
+async def ingest_audio(audio: UploadFile = File(...), label: str = Form("Master")):
+    """Plugin can also send a short wav window and let the Python side do the DSP."""
+    import time
+    raw = await audio.read()
+    p = os.path.join(OUT_DIR, f"ingest_{label}_{uuid.uuid4().hex[:6]}.wav")
+    open(p, "wb").write(raw)
+    notes, bands = advise.sonic_notes(p)
+    LATEST[label] = {"metrics": bands, "notes": notes, "ts": time.time()}
+    return {"ok": True, "label": label, "metrics": bands, "notes": notes}
+
+
+# ---------------------------------------------------------------- agent tools
+# Register these as webhook tools on the ElevenLabs Agent so it can call them mid-conversation.
+
+@app.get("/tools/session_context")
+def tool_session_context():
+    s = _session_or_503()
+    return advise.inventory(s)
+
+
+@app.get("/tools/master_analysis")
+def tool_master():
+    return LATEST.get("Master") or {"error": "No master analysis yet. Put the plugin on the master bus or upload a bounce to /advise/audio."}
+
+
+@app.get("/tools/track_analysis/{label}")
+def tool_track(label: str):
+    return LATEST.get(label) or {"error": f"No analysis for '{label}'. Labels seen: {list(LATEST)}"}
+
+
+@app.get("/tools/compare/{a}/{b}")
+def tool_compare(a: str, b: str):
+    A, B = LATEST.get(a), LATEST.get(b)
+    if not (A and B):
+        return {"error": f"Need analysis for both. Have: {list(LATEST)}"}
+    ma, mb = A["metrics"], B["metrics"]
+    diff = {k: round(float(ma[k]) - float(mb[k]), 3) for k in ma if k in mb and isinstance(ma[k], (int, float))}
+    return {"a": a, "b": b, "a_minus_b": diff}
 
 
 @app.get("/midi/{mid_id}")

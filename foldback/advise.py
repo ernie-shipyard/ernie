@@ -107,8 +107,20 @@ def inventory(session):
 # ----------------------------------------------------------------- sonic
 
 def sonic_notes(wav_path):
-    y, sr = librosa.load(wav_path, sr=44100, mono=True)
+    y2, sr = librosa.load(wav_path, sr=44100, mono=False)
+    stereo = y2.ndim == 2
+    y = y2.mean(axis=0) if stereo else y2
     notes = []
+    corr = None
+    if stereo:
+        l, r = y2[0], y2[1]
+        corr = float(np.corrcoef(l, r)[0, 1]) if l.std() > 0 and r.std() > 0 else 1.0
+        if corr < 0.2:
+            notes.append(dict(severity="high", track="Master", msg=f"Stereo correlation is {corr:.2f} — this will fall apart in mono.",
+                              fix="Check the sides: wide pads and stereo delays are the usual culprits. Mono the sub."))
+        elif corr > 0.95:
+            notes.append(dict(severity="low", track="Master", msg="The mix is nearly mono.",
+                              fix="Widen hats, pads or doubles; keep kick, bass and lead vocal centered."))
     S = np.abs(librosa.stft(y, n_fft=4096))
     freqs = librosa.fft_frequencies(sr=sr, n_fft=4096)
     spec = S.mean(axis=1)
@@ -145,4 +157,8 @@ def sonic_notes(wav_path):
         notes.append(dict(severity="med", track="Master", msg="The low end is a constant wall — kick and bass aren't taking turns.",
                           fix="Sidechain the bass to the kick, or shorten the bass release."))
 
-    return notes, {k: round(float(v), 3) for k, v in dict(sub=sub, low=low, lowmid=lowmid, mid=mid, high=high, crest_db=crest).items()}
+    lufs_approx = 20 * np.log10(rms) - 0.7      # un-K-weighted; close enough to flag a quiet or slammed bounce
+    bands = dict(sub=sub, low=low, lowmid=lowmid, mid=mid, high=high, crest_db=crest,
+                 peak_dbfs=20 * np.log10(peak), rms_dbfs=20 * np.log10(rms), lufs_approx=lufs_approx,
+                 stereo_correlation=corr if corr is not None else 1.0)
+    return notes, {k: round(float(v), 3) for k, v in bands.items()}

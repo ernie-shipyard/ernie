@@ -89,6 +89,7 @@
       <button id="beatMidiBtn" class="ghost">● Beatbox a beat</button>
     </div>
     <div class="meter"><div id="meterM"></div></div>
+    <div class="row" style="margin-top:12px"><button id="scanBtn" class="ghost">Scan sample library</button><span class="status" id="sScan"></span></div>
     <div class="status" id="sM"></div>
     <div class="say hidden" id="sayM"></div>
     <div id="midiOut"></div>
@@ -200,9 +201,12 @@ const midiDone = url => async blob => {
   try {
     const j = await api(url, fd); $("sM").textContent = ""; say($("sayM"), j.say);
     $("midiOut").innerHTML = `<div class="chips">${Object.entries(j.info).filter(([k])=>k!=="notes").map(([k,v])=>`<span class="chip">${k}: ${v}</span>`).join("")}</div>
-      <p><a class="dl" href="${j.midi}" download>⬇ download .mid</a> ${j.track ? `· new track in Live: <b>${j.track.track ?? "#"+(j.track.track_index+1)}</b>` : ""}</p>`;
+      <p><a class="dl" href="${j.midi}" download>⬇ download .mid</a> ${j.track ? `· new track in Live: <b>${j.track.track ?? "#"+(j.track.track_index+1)}</b>` : ""}</p>
+      ${j.instrument ? `<div class="fix">Instrument: ${j.instrument}</div>` : ""}
+      ${j.samples && Object.keys(j.samples).length ? `<div class="chips">${Object.entries(j.samples).map(([k,v]) => v.map(x=>`<span class="chip">${k}: ${x.name}</span>`).join("")).join("")}</div>` : ""}`;
   } catch (e) { $("sM").textContent = e.message; }
 };
+$("scanBtn").onclick = async () => { $("sScan").textContent = "Scanning…"; try { const j = await api("/samples/scan"); $("sScan").textContent = j.error || `${j.count} samples · ` + Object.entries(j.tags).filter(([,n])=>n).map(([t,n])=>`${n} ${t}`).join(", "); } catch (e) { $("sScan").textContent = e.message; } };
 toggleRecord($("humMidiBtn"), "● Hum a melody", "meterM", midiDone("/midi/hum"));
 toggleRecord($("beatMidiBtn"), "● Beatbox a beat", "meterM", midiDone("/midi/beatbox"));
 

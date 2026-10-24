@@ -79,7 +79,8 @@ def hum_to_midi_file(wav_path, out_path, tempo_bpm=None):
     q = quantize(notes, tempo)
     notes_to_midi(q, tempo, out_path)
     return {"tempo": round(tempo), "note_count": len(q),
-            "notes": [librosa.midi_to_note(p) for p, *_ in q][:16]}
+            "notes": [librosa.midi_to_note(p) for p, *_ in q][:16],
+            "pitches": [int(p) for p, *_ in q]}
 
 
 # ----------------------------------------------------------------- beatbox
@@ -117,13 +118,16 @@ def beatbox_to_midi_file(wav_path, out_path, tempo_bpm=None):
         if not 60 <= tempo_bpm <= 200:
             tempo_bpm = 110.0
     rms = librosa.feature.rms(y=y)[0]
-    notes = []
+    notes, types = [], []
     for t in onsets:
         pitch = classify_hit(y, t)
+        types.append({KICK: "kick", SNARE: "snare", HAT: "hat"}[pitch])
         fi = min(int(t * SR / 512), len(rms) - 1)
         vel = int(np.clip(60 + 100 * rms[fi] / (rms.max() + 1e-9), 60, 127))
         notes.append((pitch, t, 0.1, vel))
     q = quantize(notes, tempo_bpm, grid=0.25)
     notes_to_midi(q, tempo_bpm, out_path, channel=9)
     counts = {"kick": sum(p == KICK for p, *_ in q), "snare": sum(p == SNARE for p, *_ in q), "hat": sum(p == HAT for p, *_ in q)}
-    return {"tempo": round(tempo_bpm), "hits": len(q), **counts}
+    info = {"tempo": round(tempo_bpm), "hits": len(q), **counts}
+    info["_onsets"], info["_types"], info["_y"] = [float(t) for t in onsets], types, y   # stripped before JSON
+    return info
