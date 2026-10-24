@@ -9,6 +9,7 @@ SR = 22050
 # beatbox hit classification (classify_hit / beatbox_to_midi_file)
 HIT_WIN_S = 0.09            # analysis window after each onset
 GATE_RATIO = 0.25           # drop onsets whose window peak < this * loudest hit in the take
+MIN_GAP_S = 0.2             # drop an onset within this of a louder one (double triggers)
 LOW_HZ, HIGH_HZ = 180, 2500  # band edges: low < LOW_HZ <= mid < HIGH_HZ <= high
 KICK_LOW = 0.35             # kick if low ratio above this ...
 KICK_CENTROID_HZ = 600      # ... or centroid below this (laptop mics lose the sub)
@@ -132,7 +133,13 @@ def beatbox_to_midi_file(wav_path, out_path, tempo_bpm=None):
     onsets = librosa.onset.onset_detect(y=y, sr=SR, units="time", backtrack=True, delta=0.08)
     peaks = np.array([np.max(np.abs(y[int(t * SR): int((t + HIT_WIN_S) * SR)]), initial=0.0) for t in onsets])
     if len(peaks):
-        onsets = onsets[peaks >= GATE_RATIO * peaks.max()]   # drop breath / room-tail ghost onsets
+        keep = peaks >= GATE_RATIO * peaks.max()             # drop breath / room-tail ghost onsets
+        onsets, peaks = onsets[keep], peaks[keep]
+    kept = []
+    for j in np.argsort(-peaks):                             # loudest first, so the louder of a double trigger wins
+        if all(abs(onsets[j] - onsets[k]) >= MIN_GAP_S for k in kept):
+            kept.append(j)
+    onsets = onsets[sorted(kept)]
     if len(onsets) < 2:
         raise ValueError("Didn't hear hits — try harder consonants: 'b', 'k', 'ts'.")
     if tempo_bpm is None:
