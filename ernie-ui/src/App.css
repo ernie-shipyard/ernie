@@ -1,0 +1,129 @@
+
+:root {
+  --primary: #ff8c32;
+  --primary-hover: #ffab63;
+  --background: #17120e;
+  --text: #ffffff;
+  --secondary-text: #a89b92;
+  --error: #ff6b6b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: Arial, sans-serif;
+  background: var(--background);
+  color: var(--text);
+}
+
+.app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  padding: 30px;
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.header h1 {
+  margin: 0;
+  font-size: 34px;
+  color: var(--primary);
+}
+
+.header p {
+  margin-top: 5px;
+  color: var(--secondary-text);
+}
+
+.online {
+  font-size: 13px;
+  color: var(--primary);
+}
+
+.content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.avatar {
+  width: 220px;
+  height: 220px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border-radius: 0;
+  box-shadow: none;
+  margin-bottom: 24px;
+}
+
+.ernie-image {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.content h2 {
+  font-size: 25px;
+  max-width: 500px;
+}
+
+.subtitle,
+.hint,
+footer {
+  color: var(--secondary-text);
+}
+
+button {
+  margin-top: 25px;
+  padding: 15px 35px;
+  background: var(--primary);
+  color: #17120e;
+  border: none;
+  border-radius: 30px;
+  cursor: pointer;
+  font-size: 16px;
+  font-weight: bold;
+  transition: background 0.2s ease;
+}
+
+button:hover {
+  background: var(--primary-hover);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.stop-button {
+  background: #c65b2b;
+  color: white;
+}
+
+.stop-button:hover {
+  background: #e57841;
+}
+
+.error-message {
+  color: var(--error);
+  max-width: 500px;
+  overflow-wrap: anywhere;
+}
+
+footer {
+  text-align: center;
+  font-size: 12px;
+}
