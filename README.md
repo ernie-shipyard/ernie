@@ -2,14 +2,14 @@
 
 ## ERNIE at a glance
 
-ernie reads the session (AbletonOSC + JUCE capture), builds with you (Stack: library picks by key/tempo, ElevenLabs Sound Effects + Music generation, hum→MIDI), and critiques (mixengine measurements, rule-based notes spoken via TTS). Voice in/out via Scribe + TTS in the web UI; an ElevenLabs Agent front end (React/Electron) is in progress.
+ernie reads the session (AbletonOSC + JUCE capture), builds with you (Stack: library picks by key/tempo, ElevenLabs Sound Effects + Music generation, hum→MIDI), and critiques (mixengine measurements, rule-based notes spoken via TTS). Talk to it through the ElevenLabs Agent in the React/Electron app (see **Run Ernie** below); the original web UI with Scribe + TTS is the Studio tab.
 
 ### Run
 
 **Backend + web UI** (port 8000)
 
 ```sh
-python3 -m venv .venv && source .venv/bin/activate
+python3.13 -m venv .venv && source .venv/bin/activate   # Python 3.10+
 pip install -r requirements.txt
 cp .env.example .env   # ELEVENLABS_API_KEY, SAMPLE_DIRS, OUT_DIR=./demo/generated (demo cache)
 uvicorn app:app --reload --port 8000
@@ -29,12 +29,10 @@ curl -X POST http://127.0.0.1:8000/mix/analyze -H 'Content-Type: application/jso
 **React/Electron UI** (port 5173, `strictPort`)
 
 ```sh
-cd ernie-ui
-npm install
-npm run dev
+scripts/dev.sh     # backend + Vite + Electron; see "Run Ernie (voice app)" below
 ```
 
-Put `VITE_ELEVENLABS_AGENT_ID` in `ernie-ui/.env.local`. Never put the ElevenLabs API key in the UI.
+The API key stays in the root `.env`; the UI gets a signed conversation URL from the backend. Never put the ElevenLabs API key in the UI.
 
 ### Feature status
 
@@ -48,8 +46,9 @@ Put `VITE_ELEVENLABS_AGENT_ID` in `ernie-ui/.env.local`. Never put the ElevenLab
 | Ableton session read | mock | mock only |
 | Stack hum-with-metronome, Play stack, Regenerate by voice | machine (synthetic audio, stubs) | machine-tested |
 | Calibration / beatbox | — | in progress |
-| React Agent voice | — | connection unresolved |
-| Electron packaging | — | not done |
+| Agent voice + client tools (listen, generate, samples, hum, session) | human (connect, generate); machine (listen flow vs fake plugin) | working |
+| Electron dev window | human | working |
+| Electron packaged `.app` | — | not done (`npm start` runs the production build) |
 
 ### ElevenLabs usage
 
@@ -59,7 +58,7 @@ Put `VITE_ELEVENLABS_AGENT_ID` in `ernie-ui/.env.local`. Never put the ElevenLab
 | Scribe | `/ask`, `/revise` |
 | Music | `/compose`, `/stack/pregen` |
 | Sound Effects | `/generate/oneshot` |
-| Agents | `ernie-ui` (in progress) |
+| Agents | `ernie-ui` (voice conversation + client tools) |
 
 Handoffs: `docs/HANDOFF-midi-samples-stack.md`, `docs/HANDOFF-backend-juce.md`, `docs/INTEGRATION-HANDOFF.md`.
 
@@ -115,9 +114,6 @@ The plugin retains manual `/v1/recording/start` and `/v1/recording/stop` control
 
 Foldback routes provide Ableton session context, structural/spectral mix notes, speech interaction, hum-to-MIDI, sample matching, and music composition through ElevenLabs. Finished plugin listens are included: `POST /advise` adds their notes to the session notes, `POST /advise/captures` speaks them without Ableton, and `/tools/track_analysis/{label}` reads a plugin capture by track id, name, or role. Set `FOLDBACK_MOCK=1` to use `foldback/session.mock.json` without Ableton. See `docs/ARCHITECTURE.md` for component ownership and route details.
 
-<<<<<<< HEAD
-**Stack tab** (legacy page at `/`). Builds a track one layer at a time: Drums, Bass, Pad, Synth/Lead, FX, Vocals. Header shows session tempo and a key, set from the chosen sample's filename. *Pick from library* (`GET /samples/pick?tag=&key=&bpm=`) returns up to 5 indexed samples ranked by tempo then key, with mismatches flagged. *Preview* plays the chosen file. *Generate* calls ElevenLabs Sound Effects for Drums/FX one-shots (`POST /generate/oneshot`) or the Music API for 8 s loops on tonal rows (`POST /compose`, prompt includes key and tempo). *Regenerate by voice* sends your instruction through Scribe (`POST /revise`) and regenerates. *Hum melody* plays the key as a reference tone, runs a metronome, and turns the hum into quantized MIDI on a new Live track named after the row (`POST /midi/hum`). *Play stack* loops all chosen layers together in the browser at the session tempo. Beatbox → drums is in progress.
-=======
 **Stack tab.** Builds a track one layer at a time: Drums, Bass, Pad, Synth/Lead, FX, Vocals. Header shows session tempo and a key, set from the chosen sample's filename. *Pick from library* (`GET /samples/pick?tag=&key=&bpm=`) returns up to 5 indexed samples ranked by tempo then key, with mismatches flagged. *Preview* plays the chosen file. *Generate* calls ElevenLabs Sound Effects for Drums/FX one-shots (`POST /generate/oneshot`) or the Music API for 8 s loops on tonal rows (`POST /compose`, prompt includes key and tempo). *Regenerate by voice* sends your instruction through Scribe (`POST /revise`) and regenerates. *Hum melody* plays the key as a reference tone, runs a metronome, and turns the hum into quantized MIDI on a new Live track named after the row (`POST /midi/hum`). *Play stack* loops all chosen layers together in the browser at the session tempo. Beatbox → drums is in progress.
 
 ### Demo setup
@@ -125,13 +121,12 @@ Foldback routes provide Ableton session context, structural/spectral mix notes, 
 ```sh
 git clone <repo> && cd ernie
 brew install ffmpeg
-python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
-cp .env.example .env   # ELEVENLABS_API_KEY, SAMPLE_DIRS=/path/to/samples, OUT_DIR=./demo/generated
+python3.13 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
+cp .env.example .env   # ELEVENLABS_API_KEY, ELEVENLABS_AGENT_ID, SAMPLE_DIRS=/path/to/samples, OUT_DIR=./demo/generated
 uvicorn app:app --port 8000
 curl -X POST -F force=true http://127.0.0.1:8000/samples/scan           # index the library (seconds)
 curl -X POST -F key=Am -F bpm=124 http://127.0.0.1:8000/stack/pregen    # cache the demo loops
 ```
->>>>>>> kristyn/midi-samples
 
 ## Tests
 

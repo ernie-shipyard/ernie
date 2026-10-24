@@ -85,7 +85,7 @@ function HumCard({ card }) {
           <div className="card-sub">
             <a href={r.midi} download>download .mid</a> · {r.info.note_count} notes at {r.info.tempo} bpm
             {r.instrument && ` · try ${r.instrument}`}
-            {r.track && !r.track.mock && " · new MIDI track in Live"}
+            {r.track && !r.track.mock && !r.track.error && " · new MIDI track in Live"}
           </div>
         </>
       )}

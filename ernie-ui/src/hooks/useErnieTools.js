@@ -132,7 +132,7 @@ export function useErnieTools({ addCard, updateCard, modeRef }) {
       const out = await api.humToMidi({ ...take, bpm: tempo, bars: nBars, trackName: layer || "ernie melody" });
       updateCard(cardId, { phase: "", result: out });
       return say({ notes: out.info.note_count, tempo: out.info.tempo, first_notes: out.info.notes.slice(0, 8),
-                   instrument: out.instrument, live_track_created: Boolean(out.track && !out.track.mock) });
+                   instrument: out.instrument, live_track_created: Boolean(out.track && !out.track.mock && !out.track.error) });
     } catch (e) {
       updateCard(cardId, { phase: "", error: e.message });
       return `error: ${e.message}`;
