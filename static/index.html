@@ -70,6 +70,7 @@
       <label class="status">Key <input id="stKey" type="text" value="C" style="width:90px" placeholder="C, Am, F#maj"></label>
       <span class="status" id="stKeyNote"></span>
     </div>
+    <div class="row" style="margin-top:12px"><button id="playStack">▶ Play stack</button><button id="stopStack" class="ghost" disabled>■ Stop</button><span class="status" id="sPlay"></span></div>
     <div id="stackRows" style="margin-top:8px"></div>
   </section>
 
@@ -192,6 +193,7 @@ function holdRecord(btn, label, onDone) {
 
 // ---------- stack: one row per layer; each row has a chosen slot filled from the library
 // gen: "oneshot" -> Sound Effects (/generate/oneshot), "loop" -> Music API (/compose, 8 s); hum: row gets Hum melody -> MIDI
+// loop prompts are mirrored in app.py (STACK_LOOPS / stack_loop_prompt) for /stack/pregen — keep them in sync
 const loopPrompt = what => (key, bpm) => `4-bar ${what} loop in ${key} at ${bpm} bpm, no drums`;
 const LAYERS = [
   { id: "drums", label: "Drums", tag: "drums", gen: "oneshot", prompt: key => `punchy 808 kick in ${key}, tight, no reverb` },
@@ -276,7 +278,7 @@ LAYERS.forEach(L => {
   const generate = async prompt => {
     const st = stack[L.id], btns = el.querySelectorAll(".gen, .voice");
     btns.forEach(b => b.disabled = true);
-    status.textContent = L.gen === "oneshot" ? "Generating a one-shot (Sound Effects)…" : "Composing an 8 s loop (ElevenLabs Music, ~20s)…";
+    status.textContent = "generating…";   // only this row's buttons wait; the rest of the page stays live
     const fd = new FormData(); fd.append("prompt", prompt);
     if (L.gen === "loop") fd.append("length_ms", 8000);
     try {
@@ -284,7 +286,7 @@ LAYERS.forEach(L => {
       // generated loops are assumed to be at the session tempo they were prompted with; one-shots have none
       st.prompt = j.prompt; st.chosen = L.gen === "oneshot" ? { name: "generated one-shot", url: j.url }
         : { name: "generated 8 s loop", url: j.url, bpm: +$("stTempo").value || 120, tempo: "exact" };
-      status.textContent = ""; renderLayer(L); play(el.querySelector("audio"), j.url);
+      status.textContent = j.cached ? "from cache" : ""; renderLayer(L); play(el.querySelector("audio"), j.url);
     } catch (e) { status.textContent = e.message; }
     finally { btns.forEach(b => b.disabled = false); }
   };
@@ -320,6 +322,60 @@ LAYERS.forEach(L => {
     } catch (e) { status.textContent = e.message; }
   };
 });
+
+// ---------- stack playback: every row's chosen audio from one AudioContext start time, cycling 2 bars at
+// the session tempo. Drums/FX audio without a bpm is a one-shot fired on beat 1 of each bar; everything else
+// loops. A Drums loop at another tempo is stretched (playbackRate); tonal loops play as-is and get flagged.
+const ONESHOT_ROWS = new Set(["drums", "fx"]);
+let playCtx, playing = null;   // { sources: Set, timer, master, rows }
+const decoded = new Map();     // url -> Promise<AudioBuffer>
+const decode = (ctx, url) => {
+  if (!decoded.has(url)) decoded.set(url, fetch(url).then(r => { if (!r.ok) throw new Error(`${r.status}`); return r.arrayBuffer(); })
+    .then(b => ctx.decodeAudioData(b)).catch(e => { decoded.delete(url); throw e; }));
+  return decoded.get(url);
+};
+function stopStack() {
+  if (!playing) return;
+  clearInterval(playing.timer);
+  playing.sources.forEach(s => { try { s.stop(); } catch {} });
+  playing.master.disconnect();
+  playing.rows.forEach(L => $("layer-" + L.id).querySelector(".status").textContent = "");
+  playing = null; $("stopStack").disabled = true; $("sPlay").textContent = "";
+}
+$("stopStack").onclick = stopStack;
+$("playStack").onclick = async () => {
+  stopStack();
+  const ctx = playCtx ||= new AudioContext(); await ctx.resume();
+  const bpm = +$("stTempo").value || 120, bar = 4 * 60 / bpm, cycle = STACK_BARS * bar;
+  const rows = LAYERS.filter(L => stack[L.id]?.chosen);
+  if (!rows.length) { $("sPlay").textContent = "Nothing chosen yet. Pick or generate something first."; return; }
+  $("sPlay").textContent = "Loading…";
+  const loaded = await Promise.all(rows.map(L => decode(ctx, stack[L.id].chosen.url).then(buf => ({ L, buf }),
+    e => { $("layer-" + L.id).querySelector(".status").textContent = `Couldn't decode for playback: ${e.message}`; return null; })));
+  const master = ctx.createGain(); master.gain.value = 0.8; master.connect(ctx.destination);
+  const sources = new Set(), shots = [], t0 = ctx.currentTime + 0.1;
+  const source = (buf, rate = 1) => {
+    const s = ctx.createBufferSource(); s.buffer = buf; s.playbackRate.value = rate; s.connect(master);
+    sources.add(s); s.onended = () => sources.delete(s); return s;
+  };
+  for (const { L, buf } of loaded.filter(Boolean)) {
+    const c = stack[L.id].chosen, st = $("layer-" + L.id).querySelector(".status");
+    if (ONESHOT_ROWS.has(L.id) && !c.bpm) { shots.push(buf); st.textContent = "▶ one-shot on beat 1 of each bar"; continue; }
+    const off = c.bpm && Math.abs(c.bpm - bpm) >= 0.5, rate = off && L.id === "drums" ? bpm / c.bpm : 1;
+    st.textContent = !off ? "▶ looping" : rate !== 1 ? `▶ looping, stretched ${c.bpm} → ${bpm} bpm`
+      : `⚠ tempo mismatch: ${c.bpm} bpm loop at ${bpm} bpm, playing unstretched`;
+    const s = source(buf, rate);
+    s.loop = true; s.loopStart = 0; s.loopEnd = Math.min(cycle * rate, buf.duration);   // buffer seconds covering one cycle
+    s.start(t0);
+  }
+  // one-shots: look ahead 300 ms and schedule the bar downbeats that fall inside it
+  let n = 0;
+  const schedule = () => { for (; t0 + n * bar < ctx.currentTime + 0.3; n++) shots.forEach(b => source(b).start(t0 + n * bar)); };
+  schedule();
+  playing = { sources, timer: setInterval(schedule, 50), master, rows: loaded.filter(Boolean).map(x => x.L) };
+  $("stopStack").disabled = false;
+  $("sPlay").textContent = `Playing ${loaded.filter(Boolean).length} rows · ${STACK_BARS} bars at ${bpm} bpm`;
+};
 
 // ---------- session
 $("readBtn").onclick = async () => {

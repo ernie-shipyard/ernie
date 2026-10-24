@@ -12,6 +12,7 @@ foldback — a loud little studio assistant that lives next to your DAW.
 
 import io
 import os
+import hashlib
 import logging
 import re
 import uuid
@@ -173,7 +174,32 @@ def apply_revision(prompt: str, instruction: str) -> tuple[str, list[str]]:
 
 # ---------------------------------------------------------------- music
 
+# Generations are cached on disk: the id is a hash of (kind, prompt, length), so a repeat prompt is a file
+# that already exists in OUT_DIR and /track/{id} serves it. Written to .part then renamed, so a half-written
+# file never counts as a hit.
+
+def _gen_id(kind: str, prompt: str, length_ms: int) -> str:
+    return "g" + hashlib.sha1(f"{kind}|{prompt}|{length_ms}".encode()).hexdigest()[:12]
+
+
+def _cached(track_id: str) -> bool:
+    p = os.path.join(OUT_DIR, f"{track_id}.mp3")
+    return os.path.exists(p) and os.path.getsize(p) > 0
+
+
+def _save(track_id: str, chunks) -> str:
+    path = os.path.join(OUT_DIR, f"{track_id}.mp3")
+    with open(path + ".part", "wb") as f:
+        for chunk in chunks:
+            f.write(chunk)
+    os.replace(path + ".part", path)
+    return track_id
+
+
 def compose(prompt: str, length_ms: int = DEFAULT_LENGTH_MS) -> str:
+    track_id = _gen_id("music", prompt, length_ms)
+    if _cached(track_id):
+        return track_id
     try:
         track = eleven.music.compose(prompt=prompt, music_length_ms=length_ms, model_id=MUSIC_MODEL)
     except Exception as e:  # ElevenLabs returns a prompt_suggestion on bad_prompt — use it
@@ -184,12 +210,34 @@ def compose(prompt: str, length_ms: int = DEFAULT_LENGTH_MS) -> str:
             track = eleven.music.compose(prompt=suggestion, music_length_ms=length_ms, model_id=MUSIC_MODEL)
         else:
             raise
-    track_id = uuid.uuid4().hex[:10]
-    path = os.path.join(OUT_DIR, f"{track_id}.mp3")
-    with open(path, "wb") as f:
-        for chunk in track:
-            f.write(chunk)
-    return track_id
+    return _save(track_id, track)
+
+
+def sound_effect(prompt: str, duration_s: float = 1.5) -> str:
+    duration_s = min(max(duration_s, 0.5), 2.0)
+    track_id = _gen_id("sfx", prompt, int(duration_s * 1000))
+    if _cached(track_id):
+        return track_id
+    return _save(track_id, eleven.text_to_sound_effects.convert(text=prompt, duration_seconds=duration_s, prompt_influence=0.6))
+
+
+# Stack loop prompts — must stay identical to LAYERS/loopPrompt/keyPhrase in static/index.html, or /stack/pregen
+# fills cache entries the page never asks for.
+STACK_LOOPS = {"bass": "bass", "pad": "warm pad chord", "synth": "synth lead melody", "vocals": "vocal chop"}
+STACK_LOOP_MS = 8000
+
+
+def key_phrase(t: str) -> str:
+    """"Am" / "F#maj" / "C min" -> "A minor" / "F# major" / "C minor" (mirrors keyPhrase in index.html)."""
+    m = re.fullmatch(r"([A-Ga-g])([#b]?)\s*(minor|min|m|major|maj)?", t.strip(), re.I)
+    if not m:
+        return t.strip() or "C"
+    mode = "" if not m.group(3) else " major" if m.group(3).lower().startswith("maj") else " minor"
+    return m.group(1).upper() + m.group(2) + mode
+
+
+def stack_loop_prompt(row: str, key: str, bpm: float) -> str:
+    return f"4-bar {STACK_LOOPS[row]} loop in {key_phrase(key)} at {bpm:g} bpm, no drums"
 
 
 # ---------------------------------------------------------------- routes
@@ -207,28 +255,46 @@ async def analyze(audio: UploadFile = File(...), genre: str = Form("lo-fi hip ho
     return {"analysis": a, "prompt": build_prompt(a, genre)}
 
 
+# Generation routes are plain `def`: FastAPI runs them in its threadpool, so a 20 s API call doesn't
+# stall every other request the way a blocking call inside `async def` did.
 @app.post("/compose")
-async def compose_route(prompt: str = Form(...), length_ms: int = Form(DEFAULT_LENGTH_MS)):
+def compose_route(prompt: str = Form(...), length_ms: int = Form(DEFAULT_LENGTH_MS)):
+    cached = _cached(_gen_id("music", prompt, length_ms))
     try:
         track_id = compose(prompt, length_ms)
     except Exception as e:
         raise HTTPException(502, f"Music API error: {e}")
-    return {"track_id": track_id, "url": f"/track/{track_id}", "prompt": prompt}
+    return {"track_id": track_id, "url": f"/track/{track_id}", "prompt": prompt, "cached": cached}
 
 
 @app.post("/generate/oneshot")
-async def generate_oneshot(prompt: str = Form(...), duration_s: float = Form(1.5)):
+def generate_oneshot(prompt: str = Form(...), duration_s: float = Form(1.5)):
     """Stack Drums/FX rows: a short one-shot from ElevenLabs Sound Effects. Served by /track/{id} like the loops."""
+    cached = _cached(_gen_id("sfx", prompt, int(min(max(duration_s, 0.5), 2.0) * 1000)))
     try:
-        audio = eleven.text_to_sound_effects.convert(text=prompt, duration_seconds=min(max(duration_s, 0.5), 2.0),
-                                                     prompt_influence=0.6)
-        track_id = uuid.uuid4().hex[:10]
-        with open(os.path.join(OUT_DIR, f"{track_id}.mp3"), "wb") as f:
-            for chunk in audio:
-                f.write(chunk)
+        track_id = sound_effect(prompt, duration_s)
     except Exception as e:
         raise HTTPException(502, f"Sound Effects API error: {e}")
-    return {"track_id": track_id, "url": f"/track/{track_id}", "prompt": prompt}
+    return {"track_id": track_id, "url": f"/track/{track_id}", "prompt": prompt, "cached": cached}
+
+
+@app.post("/stack/pregen")
+def stack_pregen(key: str = Form("C"), bpm: float = Form(120)):
+    """Warm the cache before a demo: one 8 s loop each for Bass, Pad, Synth/Lead and Vocals at this key + bpm,
+    with the exact prompts the Stack tab's Generate sends. Rows run in parallel; a failed row can just be rerun."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    def run(row):
+        prompt = stack_loop_prompt(row, key, bpm)
+        cached = _cached(_gen_id("music", prompt, STACK_LOOP_MS))
+        try:
+            tid = compose(prompt, STACK_LOOP_MS)
+            return {"prompt": prompt, "url": f"/track/{tid}", "cached": cached}
+        except Exception as e:
+            return {"prompt": prompt, "error": str(e)}
+
+    with ThreadPoolExecutor(max_workers=len(STACK_LOOPS)) as ex:
+        return {"key": key_phrase(key), "bpm": bpm, "rows": dict(zip(STACK_LOOPS, ex.map(run, STACK_LOOPS)))}
 
 
 @app.post("/revise")
