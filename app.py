@@ -112,7 +112,7 @@ def analyze_hum(wav_path: str) -> dict:
 def build_prompt(a: dict, genre: str = "lo-fi hip hop") -> str:
     return (
         f"A {genre} instrumental track at about {a['tempo']} bpm, centered on {a['key_center']}. "
-        f"The lead melody {a["contour"]}, {a['movement']}, spanning roughly {a['range_semitones']} semitones. "
+        f"The lead melody {a['contour']}, {a['movement']}, spanning roughly {a['range_semitones']} semitones. "
         f"The overall feel is {a['feel']}. Keep the melody prominent and hummable; no vocals."
     )
 
