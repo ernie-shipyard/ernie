@@ -277,7 +277,8 @@ def request_listen(track_id: str, body: ListenRequest) -> CaptureResponse:
 
 
 def _run_plugin_capture(track_id: str, capture_id: str, port: int, token: str,
-                        playback_timeout: float, max_duration: float) -> None:
+                        playback_timeout: float, max_duration: float,
+                        previous_session_id: str) -> None:
     """Poll one loopback JUCE instance, fetch its WAV, and run the normal DSP path."""
     base = "http://127.0.0.1:{}".format(port)
     deadline = time.monotonic() + playback_timeout + max_duration + 15.0
@@ -289,12 +290,20 @@ def _run_plugin_capture(track_id: str, capture_id: str, port: int, token: str,
                 return
 
             status_payload = json.loads(_plugin_request("GET", base + "/v1/status", timeout=2))
-            if status_payload.get("recording"):
+            is_new_session = bool(status_payload.get("session_id")) and (
+                status_payload.get("session_id") != previous_session_id
+            )
+            if is_new_session and status_payload.get("recording"):
                 current = captures.get(capture_id)
                 if current is not None and current.status == "waiting_for_playback":
                     captures.update_plugin_status(capture_id, "recording")
 
-            if status_payload.get("capture_ready"):
+            # capture_ready can still refer to a prior WAV while the new listen
+            # is armed or recording. Accept only a WAV from the new session once
+            # the plugin has stopped recording.
+            if (is_new_session and not status_payload.get("recording")
+                    and status_payload.get("capture_ready")
+                    and status_payload.get("samples_written", 0) > 0):
                 captures.begin_processing(capture_id)
                 cached_path = _download_plugin_wav(base + "/v1/capture.wav", token, timeout=30)
                 try:
@@ -340,6 +349,9 @@ def request_plugin_listen(track_id: str, body: PluginListenRequest,
     try:
         handshake = json.loads(_plugin_request("POST", base + "/v1/handshake", timeout=2))
         token = handshake["token"]
+        previous_session_id = json.loads(
+            _plugin_request("GET", base + "/v1/status", timeout=2)
+        ).get("session_id", "")
     except Exception as error:
         captures.fail(capture.capture_id)
         _release_plugin_port(body.plugin_port)
@@ -360,7 +372,7 @@ def request_plugin_listen(track_id: str, body: PluginListenRequest,
 
     background_tasks.add_task(
         _run_plugin_capture, track_id, capture.capture_id, body.plugin_port, token,
-        body.playback_start_timeout_seconds, body.max_duration_seconds,
+        body.playback_start_timeout_seconds, body.max_duration_seconds, previous_session_id,
     )
     return _capture_response(capture)
 

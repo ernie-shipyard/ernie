@@ -88,9 +88,14 @@ def test_plugin_listen_orchestrates_juce_capture_and_analysis(client, monkeypatc
     time = np.arange(sample_rate // 2) / sample_rate
     payload = wav_bytes(0.25 * np.sin(2 * np.pi * 440 * time), sample_rate)
     statuses = iter([
-        {"recording": True, "capture_ready": False},
-        {"recording": False, "capture_ready": True},
+        {"session_id": "previous", "recording": False, "capture_ready": True,
+         "samples_written": 90008},
+        {"session_id": "current", "recording": True, "capture_ready": True,
+         "samples_written": 465408},
+        {"session_id": "current", "recording": False, "capture_ready": True,
+         "samples_written": 465408},
     ])
+    observed_statuses = []
 
     def fake_plugin_request(method, url, token="", payload=None, timeout=2.0):
         if url.endswith("handshake"):
@@ -101,10 +106,13 @@ def test_plugin_listen_orchestrates_juce_capture_and_analysis(client, monkeypatc
             assert payload["buffer_duration_seconds"] == 2.0
             return b'{"ok":true}'
         if url.endswith("/v1/status"):
-            return json.dumps(next(statuses)).encode()
+            payload = next(statuses)
+            observed_statuses.append(payload)
+            return json.dumps(payload).encode()
         raise AssertionError("unexpected plugin request: {}".format(url))
 
     def fake_download(url, token, timeout=30.0):
+        assert len(observed_statuses) == 3, "must wait until the new session stops before downloading its WAV"
         assert url.endswith("/v1/capture.wav")
         assert token == "local-test-token"
         path = tmp_path / "capture.wav"
