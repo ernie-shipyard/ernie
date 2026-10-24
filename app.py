@@ -335,16 +335,29 @@ async def midi_beatbox(audio: UploadFile = File(...), add_track: bool = Form(Tru
                    + (f"From your library I'd load {picks}." if picks else "Load a Drum Rack on the new track and drop this in.")}
 
 
-@app.post("/calibrate")
-async def calibrate(kick: UploadFile = File(...), snare: UploadFile = File(...), hat: UploadFile = File(...)):
-    """Three short clips of the performer's own kick / snare / hat -> beatbox prototypes for this server session."""
+@app.post("/calibrate/save")
+def calibrate_save():
+    """Write this session's calibrated prototypes to foldback/prototypes.json (the shipped default)."""
     try:
-        protos = {kind: hum2midi.clip_prototype(_to_wav(await f.read()), kind)
-                  for kind, f in [("kick", kick), ("snare", snare), ("hat", hat)]}
+        hits = hum2midi.save_prototypes()
     except ValueError as e:
         raise HTTPException(400, str(e))
-    hum2midi.PROTOTYPES.update(protos)
-    return {"prototypes": protos, "say": "Calibrated. Beatbox again and I'll hear your kick, snare and hat."}
+    return {"saved": True, "hits": hits, "say": "Saved. That calibration is the default now, even after a restart."}
+
+
+@app.post("/calibrate/{kind}")
+async def calibrate_step(kind: str, audio: UploadFile = File(...), bpm: float = Form(...),
+                         bars: int = Form(hum2midi.CAL_BARS), count_in_s: float = Form(0.0)):
+    """One class's 2-bar clip (recorded with the click) -> hit count + centroid; after the third class, apply + warn."""
+    if kind not in hum2midi.PROTO_KINDS:
+        raise HTTPException(404, f"kind must be one of {', '.join(hum2midi.PROTO_KINDS)}")
+    if not hum2midi.BPM_RANGE[0] <= bpm <= hum2midi.BPM_RANGE[1]:
+        raise HTTPException(400, f"bpm must be between {hum2midi.BPM_RANGE[0]} and {hum2midi.BPM_RANGE[1]}")
+    try:
+        wav = _to_wav(await audio.read())
+    except subprocess.CalledProcessError:
+        raise HTTPException(400, "Couldn't read that recording, try again.")
+    return hum2midi.calibration_step(wav, kind, bpm, bars, count_in_s)
 
 
 # ---------------------------------------------------------------- sample library

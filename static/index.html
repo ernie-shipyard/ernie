@@ -94,7 +94,9 @@
       <label class="status">Bars <input id="bars" type="number" min="1" max="8" value="2" style="width:56px"></label>
     </div>
     <div class="meter"><div id="meterM"></div></div>
-    <div class="row" style="margin-top:12px"><span class="status">Calibrate:</span><button id="calKick" class="ghost">🎙 Hold: kick</button><button id="calSnare" class="ghost">🎙 Hold: snare</button><button id="calHat" class="ghost">🎙 Hold: hat</button><span class="status" id="sCal"></span></div>
+    <div class="row" style="margin-top:12px"><span class="status">Calibrate (2 bars each, with click):</span><button id="calKick" class="ghost">● kick</button><button id="calSnare" class="ghost">● snare</button><button id="calHat" class="ghost">● hat</button><button id="calSave" class="ghost" disabled>Save as default</button></div>
+    <div class="status" id="sCal"></div>
+    <div class="status" id="calWarn"></div>
     <div class="row" style="margin-top:12px"><button id="scanBtn" class="ghost">Scan sample library</button><span class="status" id="sScan"></span></div>
     <div class="status" id="sM"></div>
     <div class="say hidden" id="sayM"></div>
@@ -256,17 +258,34 @@ $("beatMidiBtn").onclick = async () => {
   } finally { delete btn.dataset.busy; btn._stop = null; btn.classList.remove("rec"); btn.textContent = label; }
   await midiDone("/midi/beatbox", extra)(blob);
 };
-const cal = {}, calBtns = { kick: "calKick", snare: "calSnare", hat: "calHat" };
-Object.entries(calBtns).forEach(([kind, id]) => holdRecord($(id), `🎙 Hold: ${kind}`, async blob => {
-  cal[kind] = blob; $(id).textContent = `✓ ${kind}`;
-  const left = Object.keys(calBtns).filter(k => !cal[k]);
-  if (left.length) { $("sCal").textContent = `now: ${left.join(", ")}`; return; }
-  $("sCal").textContent = "Calibrating…";
-  const fd = new FormData(); for (const k in cal) fd.append(k, cal[k], `${k}.webm`);
-  try { const j = await api("/calibrate", fd); $("sCal").textContent = ""; say($("sayM"), j.say); }
-  catch (e) { $("sCal").textContent = e.message; }
-  for (const k in calBtns) { delete cal[k]; $(calBtns[k]).textContent = `🎙 Hold: ${k}`; }
-}));
+// calibration: each class = 2 bars with the click; server answers per class, then applies + warns after the third
+const calBtns = { kick: "calKick", snare: "calSnare", hat: "calHat" }, calLine = {}, CAL_BARS = 2;
+const title = k => k[0].toUpperCase() + k.slice(1);
+const showCal = () => $("sCal").textContent = Object.keys(calBtns).map(k => calLine[k] || `${title(k)}: —`).join(" · ");
+let calBusy = false;
+Object.entries(calBtns).forEach(([kind, id]) => $(id).onclick = async () => {
+  if (calBusy) return; calBusy = true;
+  const btn = $(id), label = btn.textContent, bpm = +$("bpm").value;
+  btn.classList.add("rec"); btn.textContent = `● ${kind}: 1 bar count-in, then ${CAL_BARS}`;
+  try {
+    const { blob, countIn } = await recordWithClick(bpm, CAL_BARS, l => $("meterM").style.width = (l*100)+"%");
+    const fd = new FormData(); fd.append("audio", blob, `${kind}.webm`);
+    fd.append("bpm", bpm); fd.append("bars", CAL_BARS); fd.append("count_in_s", countIn.toFixed(3));
+    const j = await api(`/calibrate/${kind}`, fd);
+    calLine[kind] = j.msg;
+    if (j.done) {
+      for (const k of j.done.redo || []) calLine[k] = `${title(k)}: too quiet next to the others, redo`;
+      $("calWarn").textContent = j.done.ok && j.done.warnings.length ? j.done.warnings.map(w => "⚠ " + w.msg).join("  ") : j.done.msg;
+      if (j.done.ok) $("calSave").disabled = false;
+    }
+  } catch (e) { calLine[kind] = `${title(kind)}: ${e.message}`; }
+  finally { btn.classList.remove("rec"); btn.textContent = label; calBusy = false; showCal(); }
+});
+$("calSave").onclick = async () => {
+  try { const j = await api("/calibrate/save"); $("calWarn").textContent = ""; say($("sayM"), j.say); }
+  catch (e) { $("calWarn").textContent = e.message; }
+};
+showCal();
 
 // ---------- compose (hum → track)
 let currentPrompt = "";

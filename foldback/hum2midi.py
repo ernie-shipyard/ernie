@@ -2,6 +2,7 @@
 
 import os
 import json
+import datetime
 import numpy as np
 import librosa
 import mido
@@ -15,12 +16,25 @@ HIT_WIN_S = 0.09            # feature window after each onset
 PAD_S = 0.05                # silence prepended so a hit at t=0 is caught
 GATE_RATIO = 0.25           # drop onsets whose window peak < this * loudest hit in the take
 MIN_GAP_S = 0.2             # no-tempo path: drop an onset within this of a louder one (double triggers)
-SLOTS_PER_BAR = 16          # known-tempo path: 16th-note grid in 4/4, loudest onset per slot wins
+SLOTS_PER_BAR = 16          # known-tempo path: 16th-note grid in 4/4, strongest onset per slot wins
+SLOT_MIN_STRENGTH = 0.1     # known-tempo path: onset-strength peak must reach this fraction of the take's max
+MAX_BACKTRACK_S = 0.05      # known-tempo path: an onset starts at most this long before its strength peak
 BPM_RANGE = (40, 240)       # accepted metronome tempos
 PROTO_PATH = os.path.join(os.path.dirname(__file__), "prototypes.json")
 PROTO_KINDS = ("kick", "snare", "hat")
+STD_FLOOR = 0.1             # per-feature std floor, as a fraction of the feature's global scale (1 / samples._SCALE)
 
-PROTOTYPES = {k: v for k, v in json.load(open(PROTO_PATH)).items() if k in PROTO_KINDS}  # /calibrate overwrites
+# calibration (one 2-bar clip per class, recorded with the click)
+CAL_BARS = 2
+CAL_MIN_HITS = 3            # fewer hits than this -> redo
+CAL_MIN_PEAK = 0.05         # absolute floor for a clip's loudest hit (full scale = 1.0)
+CAL_REL_PEAK = 0.25         # ... and at least this fraction of the loudest calibration clip
+SEPARATION = 1.5            # warn when two prototypes' means are closer than this x their combined spread
+TIPS = {"snare": "try 'pf'", "hat": "try a sharper 'ts'"}
+
+PROTOTYPES = {k: v for k, v in json.load(open(PROTO_PATH)).items() if k in PROTO_KINDS}  # {kind: {mean, std, hits}}
+PENDING = {}                # calibration clips this session: {kind: {"prototype", "peak", "hits", "centroid"}}
+CALIBRATED = False          # True once finish_calibration has applied a full set
 
 
 def load(path):
@@ -107,12 +121,15 @@ KICK, SNARE, HAT = 36, 38, 42  # General MIDI, which is also Ableton's default d
 PITCH = {"kick": KICK, "snare": SNARE, "hat": HAT}
 
 
+def _window_peak(y, t):
+    return float(np.max(np.abs(y[int(t * SR): int((t + HIT_WIN_S) * SR)]), initial=0.0))
+
+
 def _detect(wav_path):
     """Padded audio, raw onset times (in padded-audio seconds), and each onset's window peak."""
     y = np.concatenate([np.zeros(int(PAD_S * SR)), load(wav_path)])
     onsets = librosa.onset.onset_detect(y=y, sr=SR, units="time", backtrack=True, delta=0.08)
-    peaks = np.array([np.max(np.abs(y[int(t * SR): int((t + HIT_WIN_S) * SR)]), initial=0.0) for t in onsets])
-    return y, onsets, peaks
+    return y, onsets, np.array([_window_peak(y, t) for t in onsets])
 
 
 def take_hits(wav_path):
@@ -129,22 +146,35 @@ def take_hits(wav_path):
 
 
 def grid_hits(wav_path, bpm, bars=None, count_in_s=0.0):
-    """Known tempo: snap onsets to 16th slots counted from the end of the count-in, keep the loudest
-    onset per slot (each slot owns +-1/32 note), drop anything before bar 1 or after the last bar.
+    """Known tempo: in each 16th slot (counted from the end of the count-in, owning +-1/32 note) take the
+    strongest onset-strength peak, so soft hits right after loud ones aren't lost to onset_detect's
+    adaptive threshold. Each peak is backtracked like onset_detect, but by at most MAX_BACKTRACK_S so a
+    hit straight after a loud one doesn't walk back into that one's tail; the slot comes from the
+    backtracked start (a soft 'b' peaks ~90 ms after it starts). Then the amplitude gate.
     Returns padded audio, kept onset times (padded-audio seconds, for analysis) and their slot indices."""
-    y, onsets, peaks = _detect(wav_path)
-    slots = np.round((onsets - PAD_S - count_in_s) / (60.0 / bpm / 4)).astype(int)
-    inside = (slots >= 0) & (slots < SLOTS_PER_BAR * bars if bars else True)
-    onsets, peaks, slots = onsets[inside], peaks[inside], slots[inside]
-    if len(peaks):
-        keep = peaks >= GATE_RATIO * peaks.max()
-        onsets, peaks, slots = onsets[keep], peaks[keep], slots[keep]
+    y = np.concatenate([np.zeros(int(PAD_S * SR)), load(wav_path)])
+    env = librosa.onset.onset_strength(y=y, sr=SR)                 # same envelope + hop (512) as onset_detect
+    env = (env - env.min()) / (env.max() - env.min() + 1e-9)
+    times = librosa.frames_to_time(np.arange(len(env)), sr=SR)
+    peak_i = np.array([i for i in range(1, len(env) - 1)
+                       if env[i] > env[i - 1] and env[i] >= env[i + 1] and env[i] >= SLOT_MIN_STRENGTH], dtype=int)
+    if not len(peak_i):
+        return y, np.array([]), np.array([], dtype=int)
+    starts = np.maximum(times[librosa.onset.onset_backtrack(peak_i, env)], times[peak_i] - MAX_BACKTRACK_S)
     best = {}
-    for t, p, s in zip(onsets, peaks, slots):
-        if s not in best or p > best[s][1]:
-            best[s] = (t, p)
-    order = sorted(best)
-    return y, np.array([best[s][0] for s in order]), np.array(order, dtype=int)
+    for i, t in zip(peak_i, starts):
+        s = int(round((t - PAD_S - count_in_s) / (60.0 / bpm / 4)))
+        if s < 0 or (bars and s >= SLOTS_PER_BAR * bars):
+            continue
+        if s not in best or env[i] > env[best[s][0]]:
+            best[s] = (i, t)
+    if not best:
+        return y, np.array([]), np.array([], dtype=int)
+    order = np.array(sorted(best), dtype=int)
+    onsets = np.array([best[s][1] for s in order])
+    peaks = np.array([_window_peak(y, t) for t in onsets])
+    keep = peaks >= GATE_RATIO * peaks.max()                       # drop breath / room-tail ghost onsets
+    return y, onsets[keep], order[keep]
 
 
 def hit_features(y, t, sr=SR, win=HIT_WIN_S):
@@ -152,23 +182,97 @@ def hit_features(y, t, sr=SR, win=HIT_WIN_S):
     return samples.features(y[i: i + int(win * sr)], sr)
 
 
+def _mean(p):
+    return np.array([p["mean"][k] for k in samples.FEAT_KEYS])
+
+
+def _std(p):
+    """Per-feature std, floored at STD_FLOOR of the feature's global scale so one-hit or very tight
+    prototypes don't turn into needles."""
+    floor = np.array([STD_FLOOR / samples._SCALE[k] for k in samples.FEAT_KEYS])
+    return np.maximum(np.array([p["std"][k] for k in samples.FEAT_KEYS]), floor)
+
+
 def classify_hit(y, t, sr=SR, win=HIT_WIN_S):
-    """Nearest prototype in samples' scaled feature space. Prototypes come from prototypes.json
-    (seed data) until POST /calibrate swaps in the performer's own kick / snare / hat."""
+    """Nearest prototype by distance in std units (diagonal Mahalanobis). Prototypes come from
+    prototypes.json until calibration swaps in the performer's own kick / snare / hat."""
     f = hit_features(y, t, sr, win)
     if f is None:
         return HAT
-    v = samples._vec(f)
-    return PITCH[min(PROTOTYPES, key=lambda k: np.linalg.norm(samples._vec(PROTOTYPES[k]) - v))]
+    v = np.array([f[k] for k in samples.FEAT_KEYS])
+    return PITCH[min(PROTOTYPES, key=lambda k: np.linalg.norm((v - _mean(PROTOTYPES[k])) / _std(PROTOTYPES[k])))]
 
 
-def clip_prototype(wav_path, kind):
-    """Mean features over every hit in a calibration clip (one hit or a few)."""
-    y, onsets = take_hits(wav_path)
+def _prototype(feats):
+    F = np.array([[f[k] for k in samples.FEAT_KEYS] for f in feats])
+    sd = F.std(axis=0, ddof=1) if len(F) > 1 else np.zeros(F.shape[1])
+    return {"mean": dict(zip(samples.FEAT_KEYS, map(float, F.mean(axis=0)))),
+            "std": dict(zip(samples.FEAT_KEYS, map(float, sd))), "hits": len(feats)}
+
+
+def calibration_step(wav_path, kind, bpm, bars=CAL_BARS, count_in_s=0.0):
+    """One class's 2-bar clip -> hit count + mean centroid. Good clips are kept in PENDING; once all
+    three classes are in, finish_calibration runs and its result is returned under "done"."""
+    y, onsets, _ = grid_hits(wav_path, bpm, bars, count_in_s)
     feats = [f for f in (hit_features(y, t) for t in onsets) if f]
+    peak = max((_window_peak(y, t) for t in onsets), default=0.0)
+    out = {"kind": kind, "hits": len(feats), "peak": round(peak, 3),
+           "centroid": round(float(np.mean([f["centroid"] for f in feats]))) if feats else None}
     if not feats:
-        raise ValueError(f"Didn't hear a {kind} — hold the button and hit it a couple of times.")
-    return {k: float(np.mean([f[k] for f in feats])) for k in samples.FEAT_KEYS}
+        out.update(ok=False, msg=f"{kind.title()}: no hits heard after the count-in, redo")
+    elif peak < CAL_MIN_PEAK:
+        out.update(ok=False, msg=f"{kind.title()}: too quiet (peak {peak:.2f}), get closer and redo")
+    elif len(feats) < CAL_MIN_HITS:
+        out.update(ok=False, msg=f"{kind.title()}: only {len(feats)} hit{'s' * (len(feats) != 1)}, redo")
+    else:
+        out.update(ok=True, msg=f"{kind.title()}: {len(feats)} hits, {out['centroid']} Hz")
+        PENDING[kind] = {"prototype": _prototype(feats), "peak": peak, "hits": len(feats), "centroid": out["centroid"]}
+    if not out["ok"]:
+        PENDING.pop(kind, None)
+    if out["ok"] and all(k in PENDING for k in PROTO_KINDS):
+        out["done"] = finish_calibration()
+    return out
+
+
+def finish_calibration():
+    """All three clips in: reject any clip much quieter than the loudest, else apply the prototypes
+    and warn about pairs whose means sit within SEPARATION x their combined spread."""
+    global CALIBRATED
+    loud = max(PENDING[k]["peak"] for k in PROTO_KINDS)
+    quiet = [k for k in PROTO_KINDS if PENDING[k]["peak"] < CAL_REL_PEAK * loud]
+    if quiet:
+        msg = " ".join(f"{k.title()} is much quieter than the loudest clip ({PENDING[k]['peak']:.2f} vs {loud:.2f}), redo it."
+                       for k in quiet)
+        for k in quiet:
+            PENDING.pop(k)
+        return {"ok": False, "redo": quiet, "msg": msg}
+    protos = {k: PENDING[k]["prototype"] for k in PROTO_KINDS}
+    PROTOTYPES.update(protos)
+    CALIBRATED = True
+    w = np.array([samples._SCALE[k] for k in samples.FEAT_KEYS])
+    warnings = []
+    for a, b in [("kick", "snare"), ("kick", "hat"), ("snare", "hat")]:
+        d = float(np.linalg.norm((_mean(protos[a]) - _mean(protos[b])) * w))
+        spread = float(np.linalg.norm(np.sqrt(_std(protos[a]) ** 2 + _std(protos[b]) ** 2) * w))
+        if d < SEPARATION * spread:
+            tips = "; ".join(f"{k}: {TIPS[k]}" for k in (a, b) if k in TIPS)
+            warnings.append({"pair": [a, b], "distance": round(d, 2), "spread": round(spread, 2),
+                             "msg": f"{a.title()} and {b} sound alike (distance {d:.2f} < {SEPARATION} x spread {spread:.2f}). {tips}."})
+    return {"ok": True, "warnings": warnings,
+            "msg": "Calibrated." + ("" if warnings else " All three are clearly apart.")}
+
+
+def save_prototypes(path=None):
+    """Write the in-memory prototypes as the shipped default."""
+    if not CALIBRATED:
+        raise ValueError("Nothing calibrated this session yet: record kick, snare and hat first.")
+    out = {"_note": f"Calibrated {datetime.date.today().isoformat()} in the UI (POST /calibrate/save): the performer's "
+                    f"own 2-bar kick / snare / hat clips. Replace by recalibrating and saving again.",
+           "_source": {"window_s": HIT_WIN_S, **{k: {"hits": PROTOTYPES[k]["hits"]} for k in PROTO_KINDS}},
+           **{k: PROTOTYPES[k] for k in PROTO_KINDS}}
+    with open(path or PROTO_PATH, "w") as fh:
+        json.dump(out, fh, indent=2)
+    return {k: PROTOTYPES[k]["hits"] for k in PROTO_KINDS}
 
 
 def beatbox_to_midi_file(wav_path, out_path, tempo_bpm=None, bars=None, count_in_s=0.0):

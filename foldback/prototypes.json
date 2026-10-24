@@ -1,5 +1,5 @@
 {
-  "_note": "SEED DATA - hand-labelled hits from a single laptop-mic beatbox take. Replace via POST /calibrate (session only) or by re-seeding. 'snare' is a single hit that was actually a kick (760 Hz centroid).",
+  "_note": "SEED DATA - hand-labelled hits from a single laptop-mic beatbox take; std is the spread of those same hits (floored at classify time). 'snare' is a single hit that was actually a kick (760 Hz centroid). Replace by calibrating in the UI and pressing 'Save as default' (POST /calibrate/save).",
   "_source": {
     "take": "tmph0x7shsv.webm.wav",
     "window_s": 0.09,
@@ -14,40 +14,76 @@
       5.248,
       5.759
     ],
+    "snare": [
+      0.348
+    ],
     "hat": [
       0.673,
       0.836,
       4.481
-    ],
-    "snare": [
-      0.348
     ]
   },
   "kick": {
-    "dur": 0.08998,
-    "centroid": 380.86943,
-    "low": 0.02179,
-    "mid": 0.97372,
-    "high": 0.00449,
-    "attack": 0.04726,
-    "zcr": 0.04284
-  },
-  "hat": {
-    "dur": 0.08998,
-    "centroid": 3089.1376,
-    "low": 0.04323,
-    "mid": 0.32614,
-    "high": 0.63063,
-    "attack": 0.03696,
-    "zcr": 0.20363
+    "mean": {
+      "dur": 0.08998,
+      "centroid": 380.86943,
+      "low": 0.02179,
+      "mid": 0.97372,
+      "high": 0.00449,
+      "attack": 0.04726,
+      "zcr": 0.04284
+    },
+    "std": {
+      "dur": 0.0,
+      "centroid": 29.86195,
+      "low": 0.01415,
+      "mid": 0.01953,
+      "high": 0.00878,
+      "attack": 0.02887,
+      "zcr": 0.01087
+    },
+    "hits": 9
   },
   "snare": {
-    "dur": 0.08998,
-    "centroid": 759.91497,
-    "low": 0.031,
-    "mid": 0.91731,
-    "high": 0.05169,
-    "attack": 0.04871,
-    "zcr": 0.10232
+    "mean": {
+      "dur": 0.08998,
+      "centroid": 759.91497,
+      "low": 0.031,
+      "mid": 0.91731,
+      "high": 0.05169,
+      "attack": 0.04871,
+      "zcr": 0.10232
+    },
+    "std": {
+      "dur": 0.0,
+      "centroid": 0.0,
+      "low": 0.0,
+      "mid": 0.0,
+      "high": 0.0,
+      "attack": 0.0,
+      "zcr": 0.0
+    },
+    "hits": 1
+  },
+  "hat": {
+    "mean": {
+      "dur": 0.08998,
+      "centroid": 3089.1376,
+      "low": 0.04323,
+      "mid": 0.32614,
+      "high": 0.63063,
+      "attack": 0.03696,
+      "zcr": 0.20363
+    },
+    "std": {
+      "dur": 0.0,
+      "centroid": 274.81181,
+      "low": 0.0319,
+      "mid": 0.09728,
+      "high": 0.1288,
+      "attack": 0.03925,
+      "zcr": 0.08523
+    },
+    "hits": 3
   }
 }
