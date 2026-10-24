@@ -1,89 +1,78 @@
 {
-  "_note": "SEED DATA - hand-labelled hits from a single laptop-mic beatbox take; std is the spread of those same hits (floored at classify time). 'snare' is a single hit that was actually a kick (760 Hz centroid). Replace by calibrating in the UI and pressing 'Save as default' (POST /calibrate/save).",
+  "_note": "Calibrated 2026-10-24 in the UI (POST /calibrate/save): the performer's own 2-bar kick / snare / hat clips. Replace by recalibrating and saving again.",
   "_source": {
-    "take": "tmph0x7shsv.webm.wav",
     "window_s": 0.09,
-    "kick": [
-      1.207,
-      1.904,
-      2.043,
-      2.531,
-      2.717,
-      3.204,
-      3.924,
-      5.248,
-      5.759
-    ],
-    "snare": [
-      0.348
-    ],
-    "hat": [
-      0.673,
-      0.836,
-      4.481
-    ]
+    "kick": {
+      "hits": 4
+    },
+    "snare": {
+      "hits": 5
+    },
+    "hat": {
+      "hits": 5
+    }
   },
   "kick": {
     "mean": {
-      "dur": 0.08998,
-      "centroid": 380.86943,
-      "low": 0.02179,
-      "mid": 0.97372,
-      "high": 0.00449,
-      "attack": 0.04726,
-      "zcr": 0.04284
+      "dur": 0.08997732426303855,
+      "centroid": 310.6750437666105,
+      "low": 0.6911818349596397,
+      "mid": 0.2859563047118805,
+      "high": 0.0228618603284096,
+      "attack": 0.019002267573696142,
+      "zcr": 0.05695564516129032
     },
     "std": {
       "dur": 0.0,
-      "centroid": 29.86195,
-      "low": 0.01415,
-      "mid": 0.01953,
-      "high": 0.00878,
-      "attack": 0.02887,
-      "zcr": 0.01087
+      "centroid": 107.63555972664699,
+      "low": 0.062157061104133146,
+      "mid": 0.04367542920171878,
+      "high": 0.019139823259589968,
+      "attack": 0.011274623299733123,
+      "zcr": 0.008464140939388437
     },
-    "hits": 9
+    "hits": 4
   },
   "snare": {
     "mean": {
-      "dur": 0.08998,
-      "centroid": 759.91497,
-      "low": 0.031,
-      "mid": 0.91731,
-      "high": 0.05169,
-      "attack": 0.04871,
-      "zcr": 0.10232
+      "dur": 0.08997732426303855,
+      "centroid": 1566.5682923375966,
+      "low": 0.2269192575896108,
+      "mid": 0.6079896407735725,
+      "high": 0.16509110163610005,
+      "attack": 0.03886621315192744,
+      "zcr": 0.18679435483870965
     },
     "std": {
       "dur": 0.0,
-      "centroid": 0.0,
-      "low": 0.0,
-      "mid": 0.0,
-      "high": 0.0,
-      "attack": 0.0,
-      "zcr": 0.0
+      "centroid": 1058.9144039188475,
+      "low": 0.3250344448014124,
+      "mid": 0.2408687158058786,
+      "high": 0.11766769468518119,
+      "attack": 0.01838922579225279,
+      "zcr": 0.07389927698992185
     },
-    "hits": 1
+    "hits": 5
   },
   "hat": {
     "mean": {
-      "dur": 0.08998,
-      "centroid": 3089.1376,
-      "low": 0.04323,
-      "mid": 0.32614,
-      "high": 0.63063,
-      "attack": 0.03696,
-      "zcr": 0.20363
+      "dur": 0.08997732426303855,
+      "centroid": 4209.818639613582,
+      "low": 0.10018529633541022,
+      "mid": 0.28289045684356073,
+      "high": 0.6169242468206584,
+      "attack": 0.06579591836734693,
+      "zcr": 0.4013104838709678
     },
     "std": {
       "dur": 0.0,
-      "centroid": 274.81181,
-      "low": 0.0319,
-      "mid": 0.09728,
-      "high": 0.1288,
-      "attack": 0.03925,
-      "zcr": 0.08523
+      "centroid": 2404.8948943659366,
+      "low": 0.18015131329451925,
+      "mid": 0.28709748553556397,
+      "high": 0.33640309934322543,
+      "attack": 0.013181583578963088,
+      "zcr": 0.071178742355836
     },
-    "hits": 3
+    "hits": 5
   }
 }

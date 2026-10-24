@@ -218,7 +218,8 @@ const midiDone = (url, extra = {}) => async blob => {
 };
 $("scanBtn").onclick = async () => { $("sScan").textContent = "Scanning…"; try { const j = await api("/samples/scan"); $("sScan").textContent = j.error || `${j.count} samples · ` + Object.entries(j.tags).filter(([,n])=>n).map(([t,n])=>`${n} ${t}`).join(", "); } catch (e) { $("sScan").textContent = e.message; } };
 toggleRecord($("humMidiBtn"), "● Hum a melody", "meterM", midiDone("/midi/hum"));
-// metronome: 1-bar count-in + N bars of click, auto-stop. count_in_s = recording start -> bar 1 downbeat as heard.
+// metronome: click starts with the recording and runs bars+1 bars (start in bar 1 or 2; the server finds the
+// first bar with a hit), then auto-stops. count_in_s = recording start -> first click as heard (latency only).
 fetch("/session").then(r => r.ok ? r.json() : null).then(j => { const t = j?.inventory?.tempo; if (t) $("bpm").value = Math.round(t); }).catch(() => {});
 let clickCtx;
 function scheduleClicks(ctx, t0, beats, spb) {
@@ -229,17 +230,22 @@ function scheduleClicks(ctx, t0, beats, spb) {
     o.connect(g).connect(ctx.destination); o.start(t); o.stop(t + 0.05);
   }
 }
-async function recordWithClick(bpm, bars, onLevel) {
+async function recordWithClick(bpm, bars, onLevel, onTick) {
   const ctx = clickCtx ||= new AudioContext(); await ctx.resume();
-  const spb = 60 / bpm, lead = 0.2; let countIn, started; const go = new Promise(r => started = r);
+  const spb = 60 / bpm, lead = 0.2, total = bars + 1; let offset, t0, timer, started; const go = new Promise(r => started = r);
   const blob = await record({ onLevel,
     onStart: () => {
-      scheduleClicks(ctx, ctx.currentTime + lead, 4 * (bars + 1), spb);
-      countIn = lead + 4 * spb + (ctx.outputLatency || 0); started();
+      t0 = ctx.currentTime + lead; scheduleClicks(ctx, t0, 4 * total, spb);
+      offset = lead + (ctx.outputLatency || 0);
+      timer = setInterval(() => { const b = Math.floor((ctx.currentTime - t0) / spb);
+        if (b >= 0 && b < 4 * total) onTick?.(Math.floor(b / 4) + 1, b % 4 + 1, total); }, 40);
+      started();
     },
-    until: () => go.then(() => new Promise(r => setTimeout(r, (countIn + 4 * bars * spb + spb / 2) * 1000))) });
-  return { blob, countIn };
+    until: () => go.then(() => new Promise(r => setTimeout(r, (offset + 4 * total * spb + spb / 2) * 1000))) });
+  clearInterval(timer);
+  return { blob, countIn: offset };
 }
+const tickLabel = (btn, what) => (bar, beat, total) => btn.textContent = `● ${what}: bar ${bar}/${total} · beat ${beat}`;
 $("beatMidiBtn").onclick = async () => {
   const btn = $("beatMidiBtn"), label = "● Beatbox a beat", meter = l => $("meterM").style.width = (l*100)+"%";
   if (btn.dataset.busy) { btn._stop?.(); return; }                 // manual stop (metronome off only)
@@ -248,8 +254,8 @@ $("beatMidiBtn").onclick = async () => {
   try {
     if ($("metro").checked) {
       const bpm = +$("bpm").value, bars = Math.max(1, +$("bars").value | 0);
-      btn.textContent = `● 1 bar count-in, then ${bars}`;
-      const r = await recordWithClick(bpm, bars, meter); blob = r.blob;
+      btn.textContent = "● starting…";
+      const r = await recordWithClick(bpm, bars, meter, tickLabel(btn, "beatbox")); blob = r.blob;
       extra = { bpm, bars, count_in_s: r.countIn.toFixed(3) };
     } else {
       btn.textContent = "■ Stop";
@@ -266,9 +272,9 @@ let calBusy = false;
 Object.entries(calBtns).forEach(([kind, id]) => $(id).onclick = async () => {
   if (calBusy) return; calBusy = true;
   const btn = $(id), label = btn.textContent, bpm = +$("bpm").value;
-  btn.classList.add("rec"); btn.textContent = `● ${kind}: 1 bar count-in, then ${CAL_BARS}`;
+  btn.classList.add("rec"); btn.textContent = `● ${kind}: starting…`;
   try {
-    const { blob, countIn } = await recordWithClick(bpm, CAL_BARS, l => $("meterM").style.width = (l*100)+"%");
+    const { blob, countIn } = await recordWithClick(bpm, CAL_BARS, l => $("meterM").style.width = (l*100)+"%", tickLabel(btn, kind));
     const fd = new FormData(); fd.append("audio", blob, `${kind}.webm`);
     fd.append("bpm", bpm); fd.append("bars", CAL_BARS); fd.append("count_in_s", countIn.toFixed(3));
     const j = await api(`/calibrate/${kind}`, fd);

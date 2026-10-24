@@ -12,6 +12,7 @@ foldback — a loud little studio assistant that lives next to your DAW.
 
 import io
 import os
+import logging
 import re
 import uuid
 import tempfile
@@ -313,6 +314,15 @@ async def midi_hum(audio: UploadFile = File(...), add_track: bool = Form(True)):
                    f"That register wants {instrument}. Drag the file onto the new track."}
 
 
+_take_log = logging.getLogger("uvicorn.error")     # shows in the uvicorn terminal
+
+
+def _log_take(route, bpm, bars, count_in_s, raw, wav, hits):
+    """One line per metronome upload, so a short or misaligned recording is visible without re-deriving it."""
+    _take_log.info("%s bpm=%s bars=%s count_in_s=%s upload_bytes=%d decoded_s=%.3f hits_kept=%s",
+                   route, bpm, bars, count_in_s, len(raw), librosa.get_duration(path=wav), hits)
+
+
 @app.post("/midi/beatbox")
 async def midi_beatbox(audio: UploadFile = File(...), add_track: bool = Form(True),
                        bpm: float | None = Form(None), bars: int | None = Form(None), count_in_s: float = Form(0.0)):
@@ -322,10 +332,13 @@ async def midi_beatbox(audio: UploadFile = File(...), add_track: bool = Form(Tru
     raw = await audio.read()
     mid_id = uuid.uuid4().hex[:10]
     out = os.path.join(OUT_DIR, f"{mid_id}.mid")
+    wav = _to_wav(raw)
     try:
-        info = hum2midi.beatbox_to_midi_file(_to_wav(raw), out, tempo_bpm=bpm, bars=bars, count_in_s=count_in_s)
+        info = hum2midi.beatbox_to_midi_file(wav, out, tempo_bpm=bpm, bars=bars, count_in_s=count_in_s)
     except ValueError as e:
+        _log_take("/midi/beatbox", bpm, bars, count_in_s, raw, wav, "<2")
         raise HTTPException(400, str(e))
+    _log_take("/midi/beatbox", bpm, bars, count_in_s, raw, wav, info["hits"])
     track = live.create_midi_track("foldback drums") if add_track else None
     onsets, types, y = info.pop("_onsets"), info.pop("_types"), info.pop("_y")
     matches = samples.match_hits(y, onsets, types, samples.index()) if os.getenv("SAMPLE_DIRS") else {}
@@ -353,11 +366,14 @@ async def calibrate_step(kind: str, audio: UploadFile = File(...), bpm: float = 
         raise HTTPException(404, f"kind must be one of {', '.join(hum2midi.PROTO_KINDS)}")
     if not hum2midi.BPM_RANGE[0] <= bpm <= hum2midi.BPM_RANGE[1]:
         raise HTTPException(400, f"bpm must be between {hum2midi.BPM_RANGE[0]} and {hum2midi.BPM_RANGE[1]}")
+    raw = await audio.read()
     try:
-        wav = _to_wav(await audio.read())
+        wav = _to_wav(raw)
     except subprocess.CalledProcessError:
         raise HTTPException(400, "Couldn't read that recording, try again.")
-    return hum2midi.calibration_step(wav, kind, bpm, bars, count_in_s)
+    step = hum2midi.calibration_step(wav, kind, bpm, bars, count_in_s)
+    _log_take(f"/calibrate/{kind}", bpm, bars, count_in_s, raw, wav, step["hits"])
+    return step
 
 
 # ---------------------------------------------------------------- sample library

@@ -146,11 +146,14 @@ def take_hits(wav_path):
 
 
 def grid_hits(wav_path, bpm, bars=None, count_in_s=0.0):
-    """Known tempo: in each 16th slot (counted from the end of the count-in, owning +-1/32 note) take the
-    strongest onset-strength peak, so soft hits right after loud ones aren't lost to onset_detect's
-    adaptive threshold. Each peak is backtracked like onset_detect, but by at most MAX_BACKTRACK_S so a
-    hit straight after a loud one doesn't walk back into that one's tail; the slot comes from the
-    backtracked start (a soft 'b' peaks ~90 ms after it starts). Then the amplitude gate.
+    """Known tempo. Slots are 16ths counted from the first click; count_in_s is only the latency from
+    recording start to that click as heard. In each slot (owning +-1/32 note) take the strongest
+    onset-strength peak, so soft hits right after loud ones aren't lost to onset_detect's adaptive
+    threshold. Each peak is backtracked like onset_detect, but by at most MAX_BACKTRACK_S so a hit straight
+    after a loud one doesn't walk back into that one's tail; the slot comes from the backtracked start
+    (a soft 'b' peaks ~90 ms after it starts). Then the amplitude gate over the whole recording.
+    Bar 1 is the first bar holding a hit that passes the gate (the performer may start in any bar);
+    earlier hits are dropped, the next `bars` bars are kept and their slots renumbered from bar 1.
     Returns padded audio, kept onset times (padded-audio seconds, for analysis) and their slot indices."""
     y = np.concatenate([np.zeros(int(PAD_S * SR)), load(wav_path)])
     env = librosa.onset.onset_strength(y=y, sr=SR)                 # same envelope + hop (512) as onset_detect
@@ -164,7 +167,7 @@ def grid_hits(wav_path, bpm, bars=None, count_in_s=0.0):
     best = {}
     for i, t in zip(peak_i, starts):
         s = int(round((t - PAD_S - count_in_s) / (60.0 / bpm / 4)))
-        if s < 0 or (bars and s >= SLOTS_PER_BAR * bars):
+        if s < 0:                                                  # before the first click
             continue
         if s not in best or env[i] > env[best[s][0]]:
             best[s] = (i, t)
@@ -174,7 +177,10 @@ def grid_hits(wav_path, bpm, bars=None, count_in_s=0.0):
     onsets = np.array([best[s][1] for s in order])
     peaks = np.array([_window_peak(y, t) for t in onsets])
     keep = peaks >= GATE_RATIO * peaks.max()                       # drop breath / room-tail ghost onsets
-    return y, onsets[keep], order[keep]
+    onsets, order = onsets[keep], order[keep]
+    first = order.min() // SLOTS_PER_BAR * SLOTS_PER_BAR           # bar 1 = first bar with a real hit
+    win = (order >= first) & (order < first + SLOTS_PER_BAR * bars if bars else True)
+    return y, onsets[win], order[win] - first
 
 
 def hit_features(y, t, sr=SR, win=HIT_WIN_S):
@@ -277,7 +283,7 @@ def save_prototypes(path=None):
 
 def beatbox_to_midi_file(wav_path, out_path, tempo_bpm=None, bars=None, count_in_s=0.0):
     """tempo_bpm given (metronome take): grid-snap, no tempo estimation, no debounce.
-    count_in_s = seconds from recording start to the downbeat of bar 1."""
+    count_in_s = latency from recording start to the first click; bar 1 is found from the hits."""
     if tempo_bpm:
         y, onsets, slots = grid_hits(wav_path, tempo_bpm, bars, count_in_s)
     else:
