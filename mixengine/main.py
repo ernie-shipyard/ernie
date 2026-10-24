@@ -120,7 +120,36 @@ def _capture_response(capture: CaptureState) -> CaptureResponse:
         duration_seconds=capture.duration_seconds,
         context_too_short=capture.context_too_short,
         measurements=capture.measurements,
+        recommendations=list(capture.recommendations or []),
     )
+
+
+def _store_capture_feedback(capture_id: str) -> None:
+    """Turn a finished plugin listen into the same notes `/mix/analyze` would give.
+
+    Scoring uses the other fresh captures so a single listen can still be compared
+    with tracks recorded a moment earlier. A short window is measured and stored,
+    but it is not turned into mix notes.
+    """
+    capture = captures.get(capture_id)
+    if capture is None or capture.context_too_short or capture.measurements is None:
+        return
+    source = registry.get(capture.track_id)
+    if source is None:
+        return
+    window = [
+        track for track in registry.list_tracks()
+        if track.id != source.id
+        and track.latest_measurements is not None
+        and not track.is_stale()
+    ]
+    window.append(replace(
+        source,
+        latest_capture_id=capture.capture_id,
+        latest_measurements=capture.measurements,
+    ))
+    notes = build_recommendations(window).get(source.id, [])
+    captures.set_recommendations(capture_id, notes)
 
 
 def _capture_command(capture: CaptureState) -> CaptureCommand:
@@ -297,6 +326,7 @@ def _run_plugin_capture(track_id: str, capture_id: str, port: int, token: str,
                     cached_path.unlink(missing_ok=True)
                 captures.complete(capture_id, measurements)
                 registry.update_measurements(track_id, measurements, capture_id=capture_id)
+                _store_capture_feedback(capture_id)
                 return
             time.sleep(0.25)
 
@@ -432,6 +462,7 @@ async def upload_capture_audio(
     if completed is None:
         raise HTTPException(status_code=404, detail="Listen request was not found.")
     updated = registry.update_measurements(track_id, measurements, capture_id=capture_id)
+    _store_capture_feedback(capture_id)
     if updated is None:
         raise HTTPException(status_code=404, detail="Track is not registered.")
     return _track_view(updated)

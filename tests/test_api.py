@@ -196,6 +196,63 @@ def test_silence_has_null_levels_and_no_recommendations(client):
     assert client.post("/mix/analyze").json()["recommendations"] == []
 
 
+def test_completed_plugin_listen_returns_mixing_notes(client, monkeypatch, tmp_path):
+    register(client, "kick", "Kick", role="kick")
+    sample_rate = 16000
+    # A steady loud tone has almost no crest. On a transient role that is the note.
+    audio = np.full(sample_rate // 2, 0.5, dtype=np.float32)
+    payload = wav_bytes(audio, sample_rate)
+    statuses = iter([
+        {"recording": True, "capture_ready": False},
+        {"recording": False, "capture_ready": True},
+    ])
+
+    def fake_plugin_request(method, url, token="", payload=None, timeout=2.0):
+        if url.endswith("handshake"):
+            return json.dumps({"token": "local-test-token"}).encode()
+        if url.endswith("/v1/listen"):
+            return b'{"ok":true}'
+        if url.endswith("/v1/status"):
+            return json.dumps(next(statuses)).encode()
+        raise AssertionError("unexpected plugin request: {}".format(url))
+
+    def fake_download(url, token, timeout=30.0):
+        path = tmp_path / "kick.wav"
+        path.write_bytes(payload)
+        return str(path)
+
+    monkeypatch.setattr("mixengine.main._plugin_request", fake_plugin_request)
+    monkeypatch.setattr("mixengine.main._download_plugin_wav", fake_download)
+    response = client.post(
+        "/tracks/kick/plugin-listen",
+        json={"plugin_port": 17842, "minimum_context_seconds": 0.1, "max_duration_seconds": 2.0,
+              "playback_start_timeout_seconds": 1.0},
+    )
+    capture = client.get("/captures/{}".format(response.json()["capture_id"])).json()
+    assert capture["status"] == "completed"
+    assert any(note["code"] == "low_crest_factor" for note in capture["recommendations"])
+    note = next(item for item in capture["recommendations"] if item["code"] == "low_crest_factor")
+    assert note["fix"]
+    assert "crest_factor_db" in note["evidence"]
+
+
+def test_relative_band_share_flags_the_outlier_not_a_lone_bright_track(client):
+    register(client, "bass", "Bass", role="bass")
+    register(client, "hat", "Hat", role="hat")
+    sample_rate = 16000
+    time = np.arange(sample_rate // 2) / sample_rate
+    upload(client, "bass", 0.4 * np.sin(2 * np.pi * 80 * time), sample_rate)
+    hat = upload(client, "hat", 0.15 * np.sin(2 * np.pi * 7000 * time), sample_rate)
+    analysis = client.post("/mix/analyze").json()
+    by_track = {}
+    for item in analysis["recommendations"]:
+        by_track.setdefault(item["track_id"], set()).add(item["code"])
+    assert "low_end_share_outlier" in by_track["bass"]
+    assert "high_share_outlier" in by_track["hat"]
+    alone = client.post("/mix/analyze", json={"capture_ids": [hat.json()["latest_capture_id"]]}).json()
+    assert all(item["code"] != "high_share_outlier" for item in alone["recommendations"])
+
+
 def test_high_band_energy_alone_does_not_flag_eq_problem(client):
     register(client)
     sample_rate = 44100

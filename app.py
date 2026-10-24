@@ -28,6 +28,7 @@ from elevenlabs.client import ElevenLabs
 from fastapi.routing import APIRoute
 
 from foldback import live, advise, persona, hum2midi, samples
+from mixengine.feedback import build_recommendations
 from mixengine.main import app as mix_analysis_app, registry as mix_registry
 
 load_dotenv()
@@ -274,10 +275,18 @@ def session():
 @app.post("/advise")
 def advise_route(speak: bool = Form(True)):
     s = _session_or_503()
-    notes = advise.structural_notes(s)
+    notes = advise.structural_notes(s) + _plugin_capture_notes()
     inv = advise.inventory(s)
     script = persona.llm_rewrite(persona.script_from_notes(notes, inv))
     return {"notes": notes, "inventory": inv, "script": script, "audio": _speak(script) if speak else ""}
+
+
+@app.post("/advise/captures")
+def advise_captures(speak: bool = Form(False)):
+    """Speak mixing notes from plugin listens. Does not need Ableton."""
+    notes = _plugin_capture_notes()
+    script = persona.script_from_notes(notes)
+    return {"notes": notes, "script": script, "audio": _speak(script) if speak and notes else ""}
 
 
 @app.post("/advise/audio")
@@ -401,14 +410,69 @@ def tool_session_context():
     return advise.inventory(s)
 
 
+def _plugin_capture_notes():
+    """Translate finished plugin listens into the note shape the persona already speaks."""
+    tracks = [
+        track for track in mix_registry.list_tracks()
+        if track.latest_measurements is not None and not track.is_stale()
+    ]
+    if not tracks:
+        return []
+    notes = []
+    for track_notes in build_recommendations(tracks).values():
+        for note in track_notes:
+            track = mix_registry.get(note.track_id)
+            notes.append({
+                "severity": {"high": "high", "medium": "med", "low": "low"}.get(note.priority, "low"),
+                "track": None if track is None else track.name,
+                "msg": note.message,
+                "fix": note.fix or note.reasoning,
+                "code": note.code,
+                "evidence": note.evidence,
+            })
+    return notes
+
+
+def _plugin_capture_view(label):
+    wanted = label.strip().lower()
+    match = next(
+        (
+            track for track in mix_registry.list_tracks()
+            if track.latest_measurements is not None
+            and wanted in {track.id.lower(), track.name.lower(), (track.role or "").lower()}
+        ),
+        None,
+    )
+    if match is None or match.latest_measurements is None:
+        return None
+    measurements = match.latest_measurements
+    return {
+        "label": match.name,
+        "track_id": match.id,
+        "role": match.role,
+        "capture_id": match.latest_capture_id,
+        "stale": match.is_stale(),
+        "metrics": measurements.model_dump(mode="json"),
+        "notes": [note for note in _plugin_capture_notes() if note.get("track") == match.name],
+    }
+
+
 @app.get("/tools/master_analysis")
 def tool_master():
+    captured = _plugin_capture_view("master")
+    if captured is not None:
+        return captured
     return LATEST.get("Master") or {"error": "No master analysis yet. Put the plugin on the master bus or upload a bounce to /advise/audio."}
 
 
 @app.get("/tools/track_analysis/{label}")
 def tool_track(label: str):
-    return LATEST.get(label) or {"error": f"No analysis for '{label}'. Labels seen: {list(LATEST)}"}
+    captured = _plugin_capture_view(label)
+    if captured is not None:
+        return captured
+    return LATEST.get(label) or {
+        "error": f"No analysis for '{label}'. Labels seen: {list(LATEST) or [track.name for track in mix_registry.list_tracks()]}"
+    }
 
 
 @app.get("/tools/compare/{a}/{b}")

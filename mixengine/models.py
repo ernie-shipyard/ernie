@@ -64,6 +64,17 @@ class Measurements(BaseModel):
     stereo_correlation: Optional[float]
 
 
+class Recommendation(BaseModel):
+    priority: str
+    rank: int
+    code: str
+    track_id: str
+    message: str
+    reasoning: str
+    fix: str = ""
+    evidence: Dict[str, Any]
+
+
 class CaptureResponse(BaseModel):
     capture_id: str
     track_id: str
@@ -76,6 +87,7 @@ class CaptureResponse(BaseModel):
     duration_seconds: Optional[float]
     context_too_short: Optional[bool]
     measurements: Optional[Measurements] = None
+    recommendations: List[Recommendation] = Field(default_factory=list)
 
 
 class TrackView(BaseModel):
@@ -92,16 +104,6 @@ class TrackView(BaseModel):
 class TrackListResponse(BaseModel):
     tracks: List[TrackView]
     stale_after_seconds: float
-
-
-class Recommendation(BaseModel):
-    priority: str
-    rank: int
-    code: str
-    track_id: str
-    message: str
-    reasoning: str
-    evidence: Dict[str, Any]
 
 
 class TrackFeedback(BaseModel):
