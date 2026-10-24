@@ -14,7 +14,9 @@ import json
 import os
 import threading
 from dataclasses import dataclass, field, asdict
+from dotenv import load_dotenv
 
+load_dotenv()   # this module is imported before app.py gets to its own load_dotenv()
 MOCK = os.getenv("FOLDBACK_MOCK") == "1"
 MOCK_PATH = os.path.join(os.path.dirname(__file__), "session.mock.json")
 

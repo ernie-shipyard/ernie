@@ -426,7 +426,8 @@ def get_track(track_id: str):
 
 @app.get("/health")
 def health():
-    return {"ok": True, "has_key": bool(os.getenv("ELEVENLABS_API_KEY")), "mock": live.MOCK,
+    key = os.getenv("ELEVENLABS_API_KEY", "")
+    return {"ok": True, "has_key": bool(key) and key != "your_key_here", "mock": live.MOCK,
             "llm": bool(os.getenv("LLM_API_KEY"))}
 
 
