@@ -1,75 +1,68 @@
 # Architecture
 
-Five components, matching the team plan. Everything talks to the companion app over localhost HTTP.
+The root FastAPI service hosts the Foldback product routes and the independent `mixengine` WAV analysis API. Each JUCE plugin instance runs a loopback-only control server. A client selects a plugin instance by the port shown in that instance's editor.
 
-```
- ┌──────────────┐  POST /ingest/metrics      ┌───────────────────────────┐
- │ JUCE plugin  │  POST /ingest/audio  ────▶ │ companion app   (app.py)  │
- │ (pass-thru   │   (worker thread only)     │                           │
- │  analyzer)   │                            │  analysis  foldback/advise│◀── bounce upload
- └──────────────┘                            │  session   foldback/live  │◀── AbletonOSC (optional)
-                                             │  midi      foldback/hum2midi
- ┌──────────────┐  GET /tools/*  ◀────────── │  samples   foldback/samples
- │ ElevenLabs   │  (agent webhook tools)     │  voice     foldback/persona
- │ Agent / TTS  │ ◀───────────────────────── │                           │
- │ / Scribe     │                            └───────────────────────────┘
- └──────────────┘                                        ▲
-                                                 static/index.html (push-to-talk UI)
+```text
+Agent / UI
+   │ POST /tracks/{id}/plugin-listen
+   ▼
+FastAPI (app.py)
+   │ handshake, arm, poll status, fetch WAV
+   ▼
+JUCE instance on 127.0.0.1:17831–17862
+   │ bounded RAM capture gated by DAW transport
+   ▼
+WAV cache → mixengine DSP → ranked measured suggestions
 ```
 
-## Ownership
+Foldback also provides Ableton session context (`foldback/live.py`), structural and bounce notes (`foldback/advise.py`), speech/LLM phrasing (`foldback/persona.py`), hum-to-MIDI (`foldback/hum2midi.py`), and sample matching (`foldback/samples.py`). ElevenLabs speech/music routes are in `app.py`.
 
-| Area | Owner | Files |
-|---|---|---|
-| JUCE plugin (capture + DSP in C++) | — | `plugin/` |
-| DSP analysis in Python, mix notes | — | `foldback/advise.py` |
-| Audio → MIDI, sample discovery | Kristyn | `foldback/hum2midi.py`, `foldback/samples.py`, `/midi/*`, `/samples/*` |
-| Voice: agent config, persona, TTS/STT | — | `foldback/persona.py`, `/ask`, `/tools/*` |
-| Session reader (Ableton) | — | `foldback/live.py` |
-| UI | — | `static/index.html` |
+## One-shot capture contract
 
-## Plugin → companion contract
+Register a logical analysis track:
 
-The plugin never blocks `processBlock()`. A worker thread drains the ring buffer and, every N seconds, does one of:
-
-**A. Send metrics it computed itself**
-```
-POST http://127.0.0.1:8000/ingest/metrics
-{"label": "Master",
- "metrics": {"peak_dbfs": -1.2, "rms_dbfs": -9.5, "crest_factor_db": 8.3,
-             "stereo_correlation": 0.35, "lufs": -10.1,
-             "bands": {"sub": 0.12, "low": 0.30, "lowmid": 0.18, "mid": 0.30, "high": 0.10}}}
+```http
+POST /tracks/register
+Content-Type: application/json
 ```
 
-**B. Send a short audio window and let Python do the DSP**
+```json
+{"instance_id":"lead-vocal","name":"Lead","role":"vocal"}
 ```
-POST http://127.0.0.1:8000/ingest/audio     multipart: audio=<wav, 2–5 s>, label=Master
+
+Arm a chosen plugin by its editor port:
+
+```http
+POST /tracks/lead-vocal/plugin-listen
+Content-Type: application/json
 ```
 
-`label` is whatever the producer typed into the plugin instance ("Master", "Kick", "Bass"). One instance per bus you care about. The companion keeps the latest analysis per label in memory.
+```json
+{"plugin_port":17831,"minimum_context_seconds":10,"max_duration_seconds":60}
+```
 
-## Agent tools (ElevenLabs Agents → webhook)
+The service handshakes with the plugin, issues `POST /v1/listen`, and returns `202` with `capture_id`. The plugin waits for DAW transport playback before copying audio into its fixed RAM ring. It stops when transport stops or the ring reaches the requested maximum, then writes a WAV cache file named for that session off the audio thread. The service waits for that session to stop, opens its exact cache file, analyzes it, and removes it; poll `GET /captures/{capture_id}` until completed or `context_too_short`.
 
-| Tool | Endpoint |
+Direct plugin API:
+
+| Request | Purpose |
 |---|---|
-| `getSessionContext()` | `GET /tools/session_context` |
-| `getMasterAnalysis()` | `GET /tools/master_analysis` |
-| `getTrackAnalysis(label)` | `GET /tools/track_analysis/{label}` |
-| `compareTracks(a, b)` | `GET /tools/compare/{a}/{b}` |
+| `POST /v1/handshake` | Get a process-local token and the instance's port |
+| `POST /v1/listen` | Arm transport-gated capture; optional capture rate and duration |
+| `GET /v1/status` | Read waiting, recording and WAV-ready state |
+| `GET /v1/capture.wav` | Retrieve the latest completed WAV (requires token) |
+| `POST /v1/recording/start` / `/stop` | Manual capture controls retained for debugging |
 
-For local dev, expose the companion with `ngrok http 8000` and paste the URL into the agent's tool config.
+Plugin status fields distinguish `waiting_for_playback`, `recording`, and `capture_ready`. Plugin API binds only to `127.0.0.1`. Capture duration is limited to 120 seconds by the JUCE ring. The Python analysis API accepts mono/stereo WAV, measures peak/RMS, crest factor, frequency-band energy and stereo correlation, then creates recommendations with measured evidence. Spectral concentration alone does not assert an EQ fault.
 
-## Audio → MIDI → samples (Kristyn's lane)
+The older explicit plugin-poll/upload flow remains available through `POST /tracks/{id}/listen`, `GET /tracks/{id}/listen`, `POST /captures/{id}/status`, and `POST /tracks/{id}/audio` for non-JUCE clients.
 
-```
-mic ──▶ /midi/hum      ──▶ pyin pitch track ──▶ quantize ──▶ .mid  + instrument suggestion
-mic ──▶ /midi/beatbox  ──▶ onsets ──▶ band-energy classify (kick/snare/hat) ──▶ .mid (GM drum map)
-                                   └──▶ loudest hit per type ──▶ fingerprint ──▶ nearest samples in SAMPLE_DIRS
-file ──▶ /samples/match ──▶ fingerprint one sound ──▶ nearest samples
-        /samples/scan   ──▶ crawl SAMPLE_DIRS, tag everything, cache to foldback/.sample_index.json
-```
+## Agent tool routes
 
-Open problems worth attacking next, in order:
-1. Snare vs. hat on real beatboxing (noisy; current rule is band-energy only — add decay length).
-2. Tempo lock: use the DAW tempo from `/session` instead of estimating from the take.
-3. Melody: pitch-bend or glide is currently snapped to the nearest semitone; fine for a demo.
+Foldback exposes agent/webhook tools including `GET /tools/session_context`, `GET /tools/master_analysis`, `GET /tools/track_analysis/{label}`, and `GET /tools/compare/{a}/{b}`. Set the required ElevenLabs credentials in `.env` for voice features. Keep loopback plugin control local; a public webhook should call the local companion rather than exposing plugin ports.
+
+## Build and run
+
+- Python: `pip install -r requirements.txt`, then `uvicorn app:app --reload`.
+- JUCE: configure/build the root `CMakeLists.txt`; CMake fetches JUCE 9.0.4 unless `JUCE_SOURCE_DIR` is set.
+- Capture tests: `python -m pytest` and the JUCE `ErnieApiTest` / `ErnieRecorderTest` targets with `ERNIE_BUILD_TESTS=ON`.

@@ -23,13 +23,26 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 from elevenlabs.client import ElevenLabs
+from fastapi.routing import APIRoute
 
 from foldback import live, advise, persona, hum2midi, samples
+from mixengine.main import app as mix_analysis_app, registry as mix_registry
 
 load_dotenv()
 
 app = FastAPI(title="foldback")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000", "http://127.0.0.1:3000",
+        "http://localhost:5173", "http://127.0.0.1:5173",
+    ],
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "X-Capture-ID"],
+)
 eleven = ElevenLabs(api_key=os.getenv("ELEVENLABS_API_KEY"))
 
 OUT_DIR = os.path.join(tempfile.gettempdir(), "foldback_out")
@@ -427,8 +440,18 @@ def get_track(track_id: str):
 @app.get("/health")
 def health():
     key = os.getenv("ELEVENLABS_API_KEY", "")
-    return {"ok": True, "has_key": bool(key) and key != "your_key_here", "mock": live.MOCK,
+    return {"status": "ok", "registered_tracks": mix_registry.count(),
+            "ok": True, "has_key": bool(key) and key != "your_key_here", "mock": live.MOCK,
             "llm": bool(os.getenv("LLM_API_KEY"))}
 
 
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
+
+# Publish the modular WAV capture/analyze API at the same origin. Keep this
+# before the static catch-all so these documented API paths reach FastAPI.
+_static_mount = app.router.routes.pop()
+app.router.routes.extend(
+    route for route in mix_analysis_app.router.routes
+    if isinstance(route, APIRoute) and route.path != "/health"
+)
+app.router.routes.append(_static_mount)

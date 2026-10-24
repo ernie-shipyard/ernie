@@ -1,11 +1,12 @@
-fastapi
-uvicorn[standard]
+fastapi>=0.110,<1
+uvicorn[standard]>=0.27
 python-multipart
 python-dotenv
 requests
 elevenlabs
 librosa
-numpy
-soundfile
+numpy>=1.24,<3
+scipy>=1.10
+soundfile>=0.12
 mido
 python-osc

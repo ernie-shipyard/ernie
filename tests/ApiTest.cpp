@@ -59,6 +59,10 @@ int main()
     std::atomic<bool> recording { false };
     std::atomic<int> starts { 0 };
     std::atomic<int> stops { 0 };
+    std::atomic<int> listens { 0 };
+    auto captureFile = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                           .getChildFile("ernie-api-test-capture.wav");
+    captureFile.replaceWithText("RIFF-test-wav");
 
     RecordingApi api(
         [&](const RecordingCommand& command)
@@ -73,6 +77,10 @@ int main()
                 recording.store(false);
                 stops.fetch_add(1);
             }
+            else if (command.type == RecordingCommand::Type::listen)
+            {
+                listens.fetch_add(1);
+            }
             else if (recording.load())
             {
                 return juce::Result::fail("Cannot change sample rate or buffer duration while recording");
@@ -83,8 +91,11 @@ int main()
         {
             RecordingStatus status;
             status.recording = recording.load();
+            status.waitingForPlayback = true;
+            status.captureReady = true;
             return status;
-        });
+        },
+        [&]() { return captureFile; });
 
     expect(api.start(17841).wasOk(), "api should bind to loopback");
     const auto port = api.getPort();
@@ -112,7 +123,17 @@ int main()
     expect(stopped.startsWith("HTTP/1.1 200"), "authorised stop should succeed");
     expect(stops.load() == 1, "stop should reach the command handler");
 
+    const auto listen = request(port, "POST", "/v1/listen", token,
+                                "{\"match_host_sample_rate\":true,\"buffer_duration_seconds\":4}");
+    expect(listen.startsWith("HTTP/1.1 200"), "authorised listen should arm transport-gated capture");
+    expect(listens.load() == 1, "listen should reach the command handler");
+
+    const auto capture = request(port, "GET", "/v1/capture.wav", token, {});
+    expect(capture.startsWith("HTTP/1.1 200 OK\r\nContent-Type: audio/wav"), "capture endpoint should return WAV data");
+    expect(capture.contains("RIFF-test-wav"), "capture endpoint should stream the cached WAV");
+
     api.shutdown();
+    captureFile.deleteFile();
     std::cout << (failures == 0 ? "api tests passed\n" : "api tests failed\n");
     return failures == 0 ? 0 : 1;
 }

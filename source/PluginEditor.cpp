@@ -142,13 +142,15 @@ void ErnieAudioProcessorEditor::refresh()
 {
     const auto settings = processorRef.getRecorderSettings();
     const auto recording = processorRef.isRecording();
+    const auto waitingForPlayback = processorRef.isWaitingForPlayback();
+    const auto captureActive = recording || waitingForPlayback;
     const auto status = processorRef.getRecordingStatus();
 
     updatingUi = true;
-    recordButton.setToggleState(recording, juce::dontSendNotification);
-    recordButton.setButtonText(recording ? "Stop" : "Record");
-    sampleRateBox.setEnabled(!recording);
-    durationSlider.setEnabled(!recording);
+    recordButton.setToggleState(captureActive, juce::dontSendNotification);
+    recordButton.setButtonText(waitingForPlayback ? "Waiting for playback" : recording ? "Stop" : "Record");
+    sampleRateBox.setEnabled(!captureActive);
+    durationSlider.setEnabled(!captureActive);
 
     const auto selected = settings.matchHostSampleRate
                               ? 1
@@ -168,7 +170,9 @@ void ErnieAudioProcessorEditor::refresh()
     waveform.setActive(recording);
 
     const auto ramMb = static_cast<double>(status.ramBytes) / (1024.0 * 1024.0);
-    auto statusText = recording
+    auto statusText = waitingForPlayback
+                          ? juce::String("Agent listen armed — waiting for DAW playback")
+                          : recording
                           ? "Recording  " + juce::String(status.samplesWritten) + " frames   "
                                 + juce::String(ramMb, 1) + " MB RAM"
                           : "Passthrough";

@@ -46,7 +46,8 @@ public:
 
     juce::AudioProcessorValueTreeState parameters;
 
-    bool isRecording() const noexcept { return recorder.isRecording(); }
+    bool isRecording() const noexcept;
+    bool isWaitingForPlayback() const noexcept;
     RecorderSettings getRecorderSettings() const { return recorder.getSettings(); }
     juce::Result setRecorderSettings(const RecorderSettings& settings);
     juce::Result startRecording();
@@ -58,11 +59,14 @@ public:
     juce::String getLastError() const;
 
     int copyRecentCapture(float* dest, int numFrames) const;
+    juce::File getLastCaptureFile() const;
     void addChangeListener(juce::ChangeListener* listener);
     void removeChangeListener(juce::ChangeListener* listener);
 
 private:
     void handleAsyncUpdate() override;
+    void finalizeCapture();
+    void writeCaptureWav();
     juce::Result handleApiCommand(const RecordingCommand& command);
     RecordingStatus makeStatus() const;
     void publishSnapshot(const juce::AudioPlayHead::PositionInfo* position);
@@ -83,6 +87,10 @@ private:
 
     std::atomic<double> hostSampleRate { 0.0 };
     std::atomic<int> hostBlockSize { 0 };
+    std::atomic<bool> transportListenArmed { false };
+    std::atomic<bool> transportListenStarted { false };
+    std::atomic<bool> transportListenCapture { false };
+    std::atomic<bool> finalizeListenRequested { false };
 
     mutable juce::CriticalSection stateLock;
     juce::String trackName;
@@ -91,6 +99,7 @@ private:
     bool hasTrackColour = false;
     juce::String lastError;
     juce::String activeSessionId;
+    juce::File lastCaptureFile;
     juce::int64 recordingStartedAtMs = 0;
 
     bool havePlayheadSample = false;

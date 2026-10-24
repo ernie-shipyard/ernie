@@ -13,6 +13,7 @@ struct RecordingCommand
     enum class Type
     {
         start,
+        listen,
         stop,
         updateSettings,
         setSourceFile
@@ -41,6 +42,8 @@ struct RecordingStatus
     bool handshakeReady = false;
     juce::String sessionId;
     juce::String lastError;
+    bool waitingForPlayback = false;
+    bool captureReady = false;
 };
 
 class RecordingApi : private juce::Thread
@@ -48,8 +51,9 @@ class RecordingApi : private juce::Thread
 public:
     using CommandHandler = std::function<juce::Result(const RecordingCommand&)>;
     using StatusProvider = std::function<RecordingStatus()>;
+    using CaptureFileProvider = std::function<juce::File()>;
 
-    RecordingApi(CommandHandler onCommand, StatusProvider onStatus);
+    RecordingApi(CommandHandler onCommand, StatusProvider onStatus, CaptureFileProvider onCaptureFile = {});
     ~RecordingApi() override;
 
     juce::Result start(int preferredPort = 17831);
@@ -67,6 +71,7 @@ private:
 
     CommandHandler commandHandler;
     StatusProvider statusProvider;
+    CaptureFileProvider captureFileProvider;
 
     std::unique_ptr<juce::StreamingSocket> listener;
     std::atomic<bool> running { false };

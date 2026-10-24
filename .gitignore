@@ -1,3 +1,5 @@
+# Local secrets written by `elevenlabs onboard`
+/.env.local
 .env
 __pycache__/
 *.pyc
@@ -6,3 +8,4 @@ __pycache__/
 foldback/.sample_index.json
 plugin/Builds/
 build
+.DS_Store
