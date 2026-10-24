@@ -13,7 +13,9 @@ ratios, attack sharpness, zero-crossing rate. Nearest-neighbour in that space is
 """
 
 import os
+import re
 import json
+import random
 import hashlib
 import numpy as np
 import librosa
@@ -22,6 +24,7 @@ SR = 22050
 AUDIO_EXT = {".wav", ".aif", ".aiff", ".flac", ".mp3", ".ogg", ".m4a"}
 CACHE = os.path.join(os.path.dirname(__file__), ".sample_index.json")
 FEAT_KEYS = ["dur", "centroid", "low", "mid", "high", "attack", "zcr"]
+TAGS = ["kick", "snare", "hat", "perc", "bass", "pad", "synth", "vocal", "fx", "loop", "other"]
 
 
 def features(y, sr=SR):
@@ -51,7 +54,9 @@ def tag(feat, name=""):
     # filename first — producers name things. then the spectrum.
     for word, t in [("kick", "kick"), ("bd", "kick"), ("808", "bass"), ("snare", "snare"), ("clap", "snare"),
                     ("rim", "snare"), ("hat", "hat"), ("hh", "hat"), ("cymbal", "hat"), ("ride", "hat"),
-                    ("bass", "bass"), ("sub", "bass"), ("loop", "loop"), ("perc", "perc"), ("shaker", "perc")]:
+                    ("bass", "bass"), ("sub", "bass"), ("pad", "pad"), ("synth", "synth"), ("lead", "synth"),
+                    ("keys", "synth"), ("vocal", "vocal"), ("vox", "vocal"), ("fx", "fx"), ("riser", "fx"),
+                    ("impact", "fx"), ("loop", "loop"), ("perc", "perc"), ("shaker", "perc")]:
         if word in n:
             return t
     if feat["dur"] > 2.0:
@@ -63,6 +68,78 @@ def tag(feat, name=""):
     if feat["mid"] > 0.4 and feat["dur"] < 1.0:
         return "snare"
     return "perc" if feat["dur"] < 1.0 else "other"
+
+
+# --------------------------------------------------------------------- key
+
+_ROOTS = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
+NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+# "Cmin", "F#maj", "Amin", "Ebmajor", "A_minor", "Am" — root + mode, not glued to other letters
+_KEY_RE = re.compile(r"(?<![A-Za-z])([A-Ga-g])(#|b|♯|♭)?(?:[ _-]?(minor|major|min|maj)|(m))(?![A-Za-z])", re.I)
+
+
+def parse_key(text, loose=False):
+    """Key from a filename (without extension) -> (pitch_class, "min"|"maj"|None), or None.
+    loose=True is for the key box, where a bare root ("C", "F#") is the whole entry."""
+    for m in _KEY_RE.finditer(text):
+        root, acc, word, bare_m = m.groups()
+        if bare_m and (root.islower() or bare_m == "M"):   # "Am" yes, "am"/"AM" no
+            continue
+        pc = (_ROOTS[root.upper()] + {"#": 1, "♯": 1, "b": -1, "♭": -1}.get(acc or "", 0)) % 12
+        return pc, "min" if (bare_m or word.lower().startswith("min")) else "maj"
+    # bare root: the whole key-box entry ("C", "F#"), or the last token of a filename ("808_punch_F")
+    m = re.fullmatch(r"\s*([A-Ga-g])(#|b)?\s*", text) if loose else re.search(r"[ _-]([A-G])(#|b)?$", text)
+    if m:
+        return (_ROOTS[m.group(1).upper()] + {"#": 1, "b": -1}.get(m.group(2) or "", 0)) % 12, None
+    return None
+
+
+def key_name(k):
+    return f"{NOTE_NAMES[k[0]]}{'' if k[1] is None else ' ' + k[1]}" if k else None
+
+
+def key_score(sample_key, want):
+    """2 same key (or same root when the mode is unknown), 1 relative major/minor, 0 unkeyed, -1 clashes."""
+    if not sample_key or not want:
+        return 0
+    (pc, mode), (wpc, wmode) = sample_key, want
+    if mode is None:                                              # filename only gave a root
+        return 2 if pc == wpc else -1
+    if pc == wpc and (wmode is None or mode == wmode):
+        return 2
+    rel = (pc + 3) % 12 if mode == "min" else (pc - 3) % 12     # A min <-> C maj
+    if wmode is not None and mode != wmode and rel == wpc:
+        return 1
+    if wmode is None and mode == "min" and rel == wpc:            # bare "C" also accepts A minor
+        return 1
+    return -1
+
+
+GROUPS = {"drums": {"kick", "snare", "hat", "perc"}}
+# "loop"-tagged files also count for a row when the filename names that layer ("drum_loop_124", "perc_loop")
+LOOP_WORDS = {"drums": ("drum", "beat", "perc"), "bass": ("bass",),
+              "pad": ("pad", "synth", "keys"), "synth": ("pad", "synth", "keys")}
+
+
+def pick(idx, want_tag, key_text="", k=5):
+    """Up to k library candidates for a stack row: right tag, in-key first, then unkeyed, clashing keys last.
+    Tags/keys are recomputed from the cached features + filename so new keywords work without a rescan."""
+    want = parse_key(key_text, loose=True) if key_text else None
+    tags = GROUPS.get(want_tag, {want_tag})
+    scored = []
+    for it in idx.get("items", []):
+        t, n = tag(it, it["name"]), it["name"].lower()
+        if t not in tags and not (t == "loop" and any(w in n for w in LOOP_WORDS.get(want_tag, ()))):
+            continue
+        sk = parse_key(os.path.splitext(it["name"])[0])
+        scored.append((key_score(sk, want), random.random(), it, sk))
+    scored.sort(key=lambda x: (-x[0], x[1]))
+    return [{"name": it["name"], "path": it["path"], "tag": tag(it, it["name"]), "key": key_name(sk), "key_match": sc > 0}
+            for sc, _, it, sk in scored[:k]]
+
+
+def in_index(idx, path):
+    return any(it["path"] == path for it in idx.get("items", []))
 
 
 # --------------------------------------------------------------------- index
@@ -96,7 +173,7 @@ def index(dirs=None, limit=3000, force=False):
         except Exception:
             continue
     out = {"key": key, "dirs": dirs, "count": len(items), "items": items,
-           "tags": {t: sum(1 for it in items if it["tag"] == t) for t in ["kick", "snare", "hat", "perc", "bass", "loop", "other"]}}
+           "tags": {t: sum(1 for it in items if it["tag"] == t) for t in TAGS}}
     json.dump(out, open(CACHE, "w"))
     return out
 

@@ -35,6 +35,15 @@
   .high b { color:var(--hi);} .med b{ color:var(--med);} .low b{ color:var(--low);}
   .fix { color:var(--mute); font-size:14px; }
   a.dl { color:var(--acc); }
+  .layer { border-top:1px solid #222; padding:14px 0; } .layer:first-of-type { border-top:0; }
+  .layer h3 { margin:0; font-size:15px; min-width:96px; }
+  .layer button { padding:8px 14px; font-size:14px; }
+  .slot { font-size:14px; color:var(--mute); flex:1; min-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .slot b { color:var(--fg); font-weight:500; }
+  button.chip { background:transparent; font-weight:400; cursor:pointer; }
+  button.chip.on { border-color:var(--acc); color:var(--fg); }
+  .key { color:var(--acc); }
+  input[type=text], input[type=number] { font:inherit; background:#222; color:var(--fg); border:1px solid #333; border-radius:10px; padding:6px 10px; }
 </style>
 </head>
 <body>
@@ -42,15 +51,27 @@
   <h1>foldback</h1>
   <p class="sub">The studio assistant that lives next to your DAW and has opinions.</p>
   <nav>
-    <button data-tab="session" class="on">Session</button>
+    <button data-tab="stack" class="on">Stack</button>
+    <button data-tab="session">Session</button>
     <button data-tab="advise">Mix notes</button>
     <button data-tab="ask">Talk to it</button>
     <button data-tab="midi">Hum → MIDI</button>
     <button data-tab="compose">Hum → Track</button>
   </nav>
 
+  <!-- STACK -->
+  <section class="card tab" id="tab-stack">
+    <h2>Build the stack</h2>
+    <div class="row">
+      <label class="status">Tempo <input id="stTempo" type="number" min="40" max="240" value="120" style="width:80px"> bpm</label>
+      <label class="status">Key <input id="stKey" type="text" value="C" style="width:90px" placeholder="C, Am, F#maj"></label>
+      <span class="status" id="stKeyNote"></span>
+    </div>
+    <div id="stackRows" style="margin-top:8px"></div>
+  </section>
+
   <!-- SESSION -->
-  <section class="card tab" id="tab-session">
+  <section class="card tab hidden" id="tab-session">
     <h2>What it sees</h2>
     <div class="row"><button id="readBtn">Read my Ableton set</button><span class="status" id="sS"></span></div>
     <div class="chips" id="invChips"></div>
@@ -86,7 +107,7 @@
     <h2>Hum or beatbox → MIDI (lands as a new track in Live)</h2>
     <div class="row">
       <button id="humMidiBtn">● Hum a melody</button>
-      <button id="beatMidiBtn" class="ghost">● Beatbox a beat</button>
+      <button id="beatMidiBtn" class="ghost" disabled title="in progress">● Beatbox a beat · in progress</button>
     </div>
     <div class="row" style="margin-top:12px">
       <label class="status">BPM <input id="bpm" type="number" min="40" max="240" value="100" style="width:72px"></label>
@@ -166,6 +187,90 @@ function holdRecord(btn, label, onDone) {
   };
 }
 
+// ---------- stack: one row per layer; each row has a chosen slot filled from the library
+// gen: "oneshot" -> Sound Effects (/generate/oneshot), "loop" -> Music API (/compose, 8 s)
+const loopPrompt = what => (key, bpm) => `4-bar ${what} loop in ${key} at ${bpm} bpm, no drums`;
+const LAYERS = [
+  { id: "drums", label: "Drums", tag: "drums", gen: "oneshot", prompt: key => `punchy 808 kick in ${key}, tight, no reverb` },
+  { id: "bass", label: "Bass", tag: "bass", gen: "loop", prompt: loopPrompt("bass") },
+  { id: "pad", label: "Pad", tag: "pad", gen: "loop", prompt: loopPrompt("warm pad chord") },
+  { id: "synth", label: "Synth/Lead", tag: "synth", gen: "loop", prompt: loopPrompt("synth lead melody") },
+  { id: "fx", label: "FX", tag: "fx", gen: "oneshot", prompt: key => `short riser into an impact in ${key}, clean, no music` },
+  { id: "vocals", label: "Vocals", tag: "vocal", gen: "loop", prompt: loopPrompt("vocal chop") },
+];
+// "Am" / "F#maj" / "C" -> "A minor" / "F# major" / "C" for the generation prompts
+const keyPhrase = t => {
+  const m = t.trim().match(/^([A-Ga-g])([#b]?)\s*(minor|min|m|major|maj)?$/i);
+  if (!m) return t.trim() || "C";
+  const mode = !m[3] ? "" : m[3].toLowerCase().startsWith("maj") ? " major" : " minor";
+  return m[1].toUpperCase() + m[2] + mode;
+};
+const esc = t => String(t).replace(/[&<>"]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" })[c]);
+const stack = {};   // layer id -> { chosen: {name, url, key?}, candidates: [], prompt: last generation prompt }
+// key box: defaults to the last hummed melody's key_center (Hum → Track), else C; a hand edit wins
+const store = { get: k => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
+let keyEdited = false;
+function rememberKey(k) {
+  if (!k) return; store.set("foldback.lastKey", k);
+  if (!keyEdited) { $("stKey").value = k; $("stKeyNote").textContent = "from your last hum"; }
+}
+$("stKey").value = store.get("foldback.lastKey") || "C";
+if (store.get("foldback.lastKey")) $("stKeyNote").textContent = "from your last hum";
+$("stKey").oninput = () => { keyEdited = true; $("stKeyNote").textContent = ""; };
+
+function renderLayer(L) {
+  const st = stack[L.id] ||= { chosen: null, candidates: [] }, el = $("layer-" + L.id), c = st.chosen;
+  el.querySelector(".slot").innerHTML = c ? `<b>${esc(c.name)}</b>${c.key ? ` <span class="key">${esc(c.key)}</span>` : ""}` : "nothing chosen";
+  el.querySelector(".prev").disabled = !c;
+  el.querySelector(".prompt").textContent = st.prompt ? `prompt: ${st.prompt}` : "";
+  el.querySelector(".cands").innerHTML = st.candidates.map((x, i) =>
+    `<button class="chip${c && c.url === x.url ? " on" : ""}" data-i="${i}">${esc(x.name)}${x.key ? ` · <span class="key">${esc(x.key)}</span>` : ""}</button>`).join("");
+  el.querySelectorAll(".cands button").forEach(b => b.onclick = () => { st.chosen = st.candidates[+b.dataset.i]; renderLayer(L); play(el.querySelector("audio"), st.chosen.url); });
+}
+$("stackRows").innerHTML = LAYERS.map(L => `<div class="layer" id="layer-${L.id}">
+  <div class="row"><h3>${L.label}</h3><button class="ghost pick">Pick from library</button><button class="ghost prev">▶ Preview</button><span class="slot"></span></div>
+  <div class="row" style="margin-top:8px"><span style="min-width:96px"></span><button class="gen">✦ Generate</button><button class="ghost voice">🎙 Regenerate by voice</button></div>
+  <div class="chips cands"></div><div class="fix prompt"></div><div class="status"></div><audio class="hidden" controls></audio></div>`).join("");
+LAYERS.forEach(L => {
+  const el = $("layer-" + L.id), status = el.querySelector(".status");
+  renderLayer(L);
+  el.querySelector(".pick").onclick = async () => {
+    status.textContent = "Searching the library…";
+    try {
+      const r = await fetch(`/samples/pick?tag=${L.tag}&key=${encodeURIComponent($("stKey").value.trim())}`), j = await r.json();
+      if (!r.ok) throw new Error(j.detail || r.statusText);
+      const st = stack[L.id];
+      st.candidates = j.candidates.map(x => ({ ...x, url: "/sample/file?path=" + encodeURIComponent(x.path) }));
+      st.chosen = st.candidates[0] || st.chosen;
+      status.textContent = st.candidates.length ? `${st.candidates.length} candidates${j.key ? `, in-key (${j.key}) first` : ""}` : "No matches in the library. Try Scan sample library on the Hum → MIDI tab.";
+      renderLayer(L);
+    } catch (e) { status.textContent = e.message; }
+  };
+  el.querySelector(".prev").onclick = () => stack[L.id].chosen && play(el.querySelector("audio"), stack[L.id].chosen.url);
+  const generate = async prompt => {
+    const st = stack[L.id], btns = el.querySelectorAll(".gen, .voice");
+    btns.forEach(b => b.disabled = true);
+    status.textContent = L.gen === "oneshot" ? "Generating a one-shot (Sound Effects)…" : "Composing an 8 s loop (ElevenLabs Music, ~20s)…";
+    const fd = new FormData(); fd.append("prompt", prompt);
+    if (L.gen === "loop") fd.append("length_ms", 8000);
+    try {
+      const j = await api(L.gen === "oneshot" ? "/generate/oneshot" : "/compose", fd);
+      st.prompt = j.prompt; st.chosen = { name: L.gen === "oneshot" ? "generated one-shot" : "generated 8 s loop", url: j.url };
+      status.textContent = ""; renderLayer(L); play(el.querySelector("audio"), j.url);
+    } catch (e) { status.textContent = e.message; }
+    finally { btns.forEach(b => b.disabled = false); }
+  };
+  el.querySelector(".gen").onclick = () => generate(L.prompt(keyPhrase($("stKey").value), +$("stTempo").value || 120));
+  holdRecord(el.querySelector(".voice"), "🎙 Regenerate by voice", async blob => {
+    const st = stack[L.id];
+    status.textContent = "Transcribing…";
+    const fd = new FormData(); fd.append("audio", blob, "say.webm");
+    fd.append("prompt", st.prompt || L.prompt(keyPhrase($("stKey").value), +$("stTempo").value || 120));
+    try { const j = await api("/revise", fd); await generate(j.prompt); status.textContent ||= `Heard: “${j.heard}”`; }
+    catch (e) { status.textContent = e.message; }
+  });
+});
+
 // ---------- session
 $("readBtn").onclick = async () => {
   $("sS").textContent = "Reading…";
@@ -220,7 +325,7 @@ $("scanBtn").onclick = async () => { $("sScan").textContent = "Scanning…"; try
 toggleRecord($("humMidiBtn"), "● Hum a melody", "meterM", midiDone("/midi/hum"));
 // metronome: click starts with the recording and runs bars+1 bars (start in bar 1 or 2; the server finds the
 // first bar with a hit), then auto-stops. count_in_s = recording start -> first click as heard (latency only).
-fetch("/session").then(r => r.ok ? r.json() : null).then(j => { const t = j?.inventory?.tempo; if (t) $("bpm").value = Math.round(t); }).catch(() => {});
+fetch("/session").then(r => r.ok ? r.json() : null).then(j => { const t = j?.inventory?.tempo; if (t) $("bpm").value = $("stTempo").value = Math.round(t); }).catch(() => {});
 let clickCtx;
 function scheduleClicks(ctx, t0, beats, spb) {
   for (let b = 0; b < beats; b++) {
@@ -306,6 +411,7 @@ toggleRecord($("humBtn"), "● Start humming", "meter", async blob => {
   const fd = new FormData(); fd.append("audio", blob, "hum.webm"); fd.append("genre", $("genre").value);
   try {
     const { analysis, prompt } = await api("/analyze", fd);
+    rememberKey(analysis.key_center);
     $("chips").innerHTML = [`${analysis.tempo} bpm`, `key ~${analysis.key_center}`, `${analysis.range_semitones} st range`, analysis.feel].map(t=>`<span class="chip">${t}</span>`).join("");
     $("prompt1").classList.remove("hidden"); $("prompt1").textContent = prompt;
     await composeAndPlay(prompt);

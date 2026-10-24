@@ -208,11 +208,26 @@ async def analyze(audio: UploadFile = File(...), genre: str = Form("lo-fi hip ho
 
 
 @app.post("/compose")
-async def compose_route(prompt: str = Form(...)):
+async def compose_route(prompt: str = Form(...), length_ms: int = Form(DEFAULT_LENGTH_MS)):
     try:
-        track_id = compose(prompt)
+        track_id = compose(prompt, length_ms)
     except Exception as e:
         raise HTTPException(502, f"Music API error: {e}")
+    return {"track_id": track_id, "url": f"/track/{track_id}", "prompt": prompt}
+
+
+@app.post("/generate/oneshot")
+async def generate_oneshot(prompt: str = Form(...), duration_s: float = Form(1.5)):
+    """Stack Drums/FX rows: a short one-shot from ElevenLabs Sound Effects. Served by /track/{id} like the loops."""
+    try:
+        audio = eleven.text_to_sound_effects.convert(text=prompt, duration_seconds=min(max(duration_s, 0.5), 2.0),
+                                                     prompt_influence=0.6)
+        track_id = uuid.uuid4().hex[:10]
+        with open(os.path.join(OUT_DIR, f"{track_id}.mp3"), "wb") as f:
+            for chunk in audio:
+                f.write(chunk)
+    except Exception as e:
+        raise HTTPException(502, f"Sound Effects API error: {e}")
     return {"track_id": track_id, "url": f"/track/{track_id}", "prompt": prompt}
 
 
@@ -394,6 +409,24 @@ async def samples_match(audio: UploadFile = File(...), k: int = Form(3)):
         raise HTTPException(400, "Too short to fingerprint.")
     idx = samples.index()
     return {"guess": samples.tag(f), "features": f, "matches": samples.nearest(f, idx.get("items", []), k=k)}
+
+
+@app.get("/samples/pick")
+def samples_pick(tag: str, key: str = "", k: int = 5):
+    """Stack row -> up to k library candidates for that layer, in-key ones first."""
+    idx = samples.index()
+    if idx.get("error"):
+        raise HTTPException(400, idx["error"])
+    want = samples.parse_key(key, loose=True) if key else None
+    return {"tag": tag, "key": samples.key_name(want), "candidates": samples.pick(idx, tag, key, k=k)}
+
+
+@app.get("/sample/file")
+def sample_file(path: str):
+    # only files the index already knows about — this must not become a read-any-file endpoint
+    if not samples.in_index(samples.index(), path) or not os.path.exists(path):
+        raise HTTPException(404)
+    return FileResponse(path)
 
 
 # ---------------------------------------------------------------- JUCE plugin ingest (team contract)
