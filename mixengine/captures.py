@@ -30,6 +30,7 @@ class CaptureState:
     duration_seconds: Optional[float] = None
     context_too_short: Optional[bool] = None
     measurements: Optional[Measurements] = None
+    recommendations: Optional[list] = None
 
 
 class CaptureRegistry:
@@ -99,6 +100,14 @@ class CaptureRegistry:
             capture.context_too_short = measurements.duration_seconds < capture.minimum_context_seconds
             capture.completed_at = utc_now()
             capture.status = "context_too_short" if capture.context_too_short else "completed"
+            return capture
+
+    def set_recommendations(self, capture_id: str, recommendations: list) -> Optional[CaptureState]:
+        with self._lock:
+            capture = self._captures.get(capture_id)
+            if capture is None:
+                return None
+            capture.recommendations = list(recommendations)
             return capture
 
     def begin_processing(self, capture_id: str) -> Optional[CaptureState]:

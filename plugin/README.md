@@ -17,7 +17,7 @@ The backend can orchestrate the complete path through `POST /tracks/{track_id}/p
 }
 ```
 
-The service performs the plugin handshake, calls `POST /v1/listen`, and polls status. After DAW stop (or the duration cap), it reads the cache file named for that exact plugin session under `~/Documents/ernie/captures/`, analyzes it, and removes it. Captures are mono or stereo and capped at 120 seconds by the plugin's fixed RAM ring. The WAV cache is written off the audio thread.
+The service performs the plugin handshake, calls `POST /v1/listen`, and polls status. After DAW stop (or the duration cap), it reads the cache file named for that exact plugin session under `~/Documents/ernie/captures/`, analyzes it, and removes it. The finished capture carries mixing notes (gain, crest factor, polarity, and balance against other fresh captures). `POST /mix/analyze` ranks the window; `POST /advise/captures` speaks the notes. Captures are mono or stereo and capped at 120 seconds by the plugin's fixed RAM ring. The WAV cache is written off the audio thread.
 
 For direct local control, `POST /v1/handshake` returns a token. Send it as `X-Ernie-Token` to `POST /v1/listen`, `POST /v1/recording/start`, `POST /v1/recording/stop`, `POST /v1/config`, `POST /v1/source-file`, and `GET /v1/capture.wav`. `GET /v1/status` reports `waiting_for_playback`, `recording`, and `capture_ready` independently.
 
