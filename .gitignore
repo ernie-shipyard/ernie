@@ -5,3 +5,4 @@ __pycache__/
 *.mp3
 foldback/.sample_index.json
 plugin/Builds/
+build
