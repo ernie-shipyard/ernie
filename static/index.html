@@ -212,16 +212,36 @@ const esc = t => String(t).replace(/[&<>"]/g, c => ({ "&":"&amp;", "<":"&lt;", "
 const stack = {};   // layer id -> { chosen: {name, url, key?, bpm?, tempo?}, candidates: [], prompt: last generation prompt }
 // "130 bpm" tag; amber when it's far (>3%) from the session tempo
 const bpmTag = x => x.bpm ? ` <span class="bpm ${x.tempo === "far" ? "far" : ""}">${x.tempo === "far" ? "⚠ " : ""}${x.bpm} bpm</span>` : "";
-// key box: defaults to the last hummed melody's key_center (Hum → Track), else C; a hand edit wins
+// key box: choosing a keyed library sample sets it (a typed key is used until the next choice); hums never do.
+// Defaults to the last chosen sample's key, else C.
 const store = { get: k => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
-let keyEdited = false;
-function rememberKey(k) {
-  if (!k) return; store.set("foldback.lastKey", k);
-  if (!keyEdited) { $("stKey").value = k; $("stKeyNote").textContent = "from your last hum"; }
+function keyFromSample(L, x) {
+  if (!x?.key) return;
+  $("stKey").value = x.key; store.set("foldback.lastKey", x.key); $("stKeyNote").textContent = `from the ${L.label} sample`;
 }
 $("stKey").value = store.get("foldback.lastKey") || "C";
-if (store.get("foldback.lastKey")) $("stKeyNote").textContent = "from your last hum";
-$("stKey").oninput = () => { keyEdited = true; $("stKeyNote").textContent = ""; };
+if (store.get("foldback.lastKey")) $("stKeyNote").textContent = "from your last pick";
+$("stKey").oninput = () => { $("stKeyNote").textContent = ""; };
+
+// Hum melody: 2 beats of the key's root + fifth (soft sine) to tune to, then the metronome take
+const STACK_BARS = 2, PC = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+function keyRoot(text) {
+  const m = text.trim().match(/^([A-Ga-g])([#b]?)/), name = m ? m[1].toUpperCase() + m[2] : "C";
+  const pc = (PC[name[0]] + (name[1] === "#" ? 1 : name[1] === "b" ? -1 : 0) + 12) % 12;
+  return { name, midi: 57 + (pc - 9 + 12) % 12 };               // A3..G#4: easy humming range
+}
+async function refTone(midi, dur) {
+  const ctx = clickCtx ||= new AudioContext(); await ctx.resume();
+  const t0 = ctx.currentTime + 0.05;
+  for (const n of [midi, midi + 7]) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = "sine"; o.frequency.value = 440 * 2 ** ((n - 69) / 12);
+    g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(0.12, t0 + 0.08);
+    g.gain.setValueAtTime(0.12, t0 + dur - 0.15); g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    o.connect(g).connect(ctx.destination); o.start(t0); o.stop(t0 + dur + 0.02);
+  }
+  await new Promise(r => setTimeout(r, (dur + 0.1) * 1000));
+}
 
 function renderLayer(L) {
   const st = stack[L.id] ||= { chosen: null, candidates: [] }, el = $("layer-" + L.id), c = st.chosen;
@@ -230,7 +250,7 @@ function renderLayer(L) {
   el.querySelector(".prompt").textContent = st.prompt ? `prompt: ${st.prompt}` : "";
   el.querySelector(".cands").innerHTML = st.candidates.map((x, i) =>
     `<button class="chip${c && c.url === x.url ? " on" : ""}${x.tempo === "far" ? " far" : ""}" data-i="${i}">${esc(x.name)}${x.key ? ` · <span class="key">${esc(x.key)}</span>` : ""}${x.bpm ? " ·" + bpmTag(x) : ""}</button>`).join("");
-  el.querySelectorAll(".cands button").forEach(b => b.onclick = () => { st.chosen = st.candidates[+b.dataset.i]; renderLayer(L); play(el.querySelector("audio"), st.chosen.url); });
+  el.querySelectorAll(".cands button").forEach(b => b.onclick = () => { st.chosen = st.candidates[+b.dataset.i]; keyFromSample(L, st.chosen); renderLayer(L); play(el.querySelector("audio"), st.chosen.url); });
 }
 $("stackRows").innerHTML = LAYERS.map(L => `<div class="layer" id="layer-${L.id}">
   <div class="row"><h3>${L.label}</h3><button class="ghost pick">Pick from library</button><button class="ghost prev">▶ Preview</button><span class="slot"></span></div>
@@ -247,6 +267,7 @@ LAYERS.forEach(L => {
       const st = stack[L.id];
       st.candidates = j.candidates.map(x => ({ ...x, url: "/sample/file?path=" + encodeURIComponent(x.path) }));
       st.chosen = st.candidates[0] || st.chosen;
+      if (st.candidates[0]) keyFromSample(L, st.chosen);
       status.textContent = st.candidates.length ? `${st.candidates.length} candidates${j.key ? `, in-key (${j.key}) first` : ""}` : "No matches in the library. Try Scan sample library on the Hum → MIDI tab.";
       renderLayer(L);
     } catch (e) { status.textContent = e.message; }
@@ -276,17 +297,28 @@ LAYERS.forEach(L => {
     try { const j = await api("/revise", fd); await generate(j.prompt); status.textContent ||= `Heard: “${j.heard}”`; }
     catch (e) { status.textContent = e.message; }
   });
-  if (L.hum) toggleRecord(el.querySelector(".hum"), "● Hum melody", null, async blob => {
+  const hb = el.querySelector(".hum");
+  if (hb) hb.onclick = async () => {
+    if (hb.dataset.busy) return;
+    hb.dataset.busy = "1"; hb.classList.add("rec");
+    const bpm = +$("stTempo").value || 120, root = keyRoot($("stKey").value);
+    let take;
+    try {
+      hb.textContent = `● tuning… ${root.name}`; await refTone(root.midi, 2 * 60 / bpm);
+      hb.textContent = "● starting…"; take = await recordWithClick(bpm, STACK_BARS, null, tickLabel(hb, "hum"));
+    } catch (e) { status.textContent = e.message; }
+    finally { delete hb.dataset.busy; hb.classList.remove("rec"); hb.textContent = "● Hum melody"; }
+    if (!take) return;
     status.textContent = "Transcribing to MIDI…";
-    const fd = new FormData(); fd.append("audio", blob, "hum.webm"); fd.append("track_name", L.label);
+    const fd = new FormData(); fd.append("audio", take.blob, "hum.webm"); fd.append("track_name", L.label);
+    fd.append("bpm", bpm); fd.append("bars", STACK_BARS); fd.append("count_in_s", take.countIn.toFixed(3));
     try {
       const j = await api("/midi/hum", fd), more = j.info.note_count - j.info.notes.length;
       el.querySelector(".humOut").innerHTML = `<div class="strip">${j.info.notes.map(n => `<span>${esc(n)}</span>`).join("")}${more > 0 ? `<span>+${more} more</span>` : ""}</div>
         <p class="fix"><a class="dl" href="${j.midi}" download>⬇ download .mid</a> · ${j.info.note_count} notes at ${j.info.tempo} bpm${j.track ? ` · new track in Live: <b>${esc(L.label)}</b>` : ""}</p>`;
-      keyEdited = false; rememberKey(j.key_center);   // a fresh hum sets the key, even over a hand edit
       status.textContent = "";
     } catch (e) { status.textContent = e.message; }
-  });
+  };
 });
 
 // ---------- session
@@ -429,7 +461,6 @@ toggleRecord($("humBtn"), "● Start humming", "meter", async blob => {
   const fd = new FormData(); fd.append("audio", blob, "hum.webm"); fd.append("genre", $("genre").value);
   try {
     const { analysis, prompt } = await api("/analyze", fd);
-    rememberKey(analysis.key_center);
     $("chips").innerHTML = [`${analysis.tempo} bpm`, `key ~${analysis.key_center}`, `${analysis.range_semitones} st range`, analysis.feel].map(t=>`<span class="chip">${t}</span>`).join("");
     $("prompt1").classList.remove("hidden"); $("prompt1").textContent = prompt;
     await composeAndPlay(prompt);

@@ -101,12 +101,29 @@ def notes_to_midi(notes_beats, tempo_bpm, path, channel=0, program=0):
     return path
 
 
-def hum_to_midi_file(wav_path, out_path, tempo_bpm=None):
+def align_to_bars(q, bars=None, beats_per_bar=4):
+    """Metronome take, notes in beats from the first click. Like grid_hits: bar 1 is the first bar holding a
+    note (the singer may come in on any bar); earlier notes are dropped, the next `bars` bars kept."""
+    q = [n for n in q if n[1] >= 0]                                 # before the first click
+    if not q:
+        return q
+    first = min(sb for _, sb, _, _ in q) // beats_per_bar * beats_per_bar
+    end = first + bars * beats_per_bar if bars else float("inf")
+    return [(p, sb - first, min(db, end - sb), v) for p, sb, db, v in q if sb < end]
+
+
+def hum_to_midi_file(wav_path, out_path, tempo_bpm=None, bars=None, count_in_s=0.0):
+    """tempo_bpm known (metronome recorder): times count from the first click, count_in_s after recording
+    start, and the take is bar-aligned. Otherwise the tempo is estimated and time 0 is the recording start."""
     y = load(wav_path)
     notes, tempo = hum_to_notes(y, tempo_bpm)
-    if not notes:
-        raise ValueError("No melody detected — hum louder, closer to the mic.")
+    if tempo_bpm:
+        notes = [(p, s - count_in_s, d, v) for p, s, d, v in notes]
     q = quantize(notes, tempo)
+    if tempo_bpm:
+        q = align_to_bars(q, bars)
+    if not q:
+        raise ValueError("No melody detected — hum louder, closer to the mic.")
     notes_to_midi(q, tempo, out_path)
     return {"tempo": round(tempo), "note_count": len(q),
             "notes": [librosa.midi_to_note(p) for p, *_ in q][:16],

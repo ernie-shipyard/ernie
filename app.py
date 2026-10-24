@@ -314,18 +314,20 @@ async def ask(audio: UploadFile = File(None), text: str = Form("")):
 # ---------------------------------------------------------------- hum / beatbox -> MIDI
 
 @app.post("/midi/hum")
-async def midi_hum(audio: UploadFile = File(...), add_track: bool = Form(True), track_name: str = Form("foldback melody")):
+async def midi_hum(audio: UploadFile = File(...), add_track: bool = Form(True), track_name: str = Form("foldback melody"),
+                   bpm: float | None = Form(None), bars: int | None = Form(None), count_in_s: float = Form(0.0)):
+    """bpm (+ bars, count_in_s) come from the metronome recorder; without them the tempo is estimated."""
     raw = await audio.read()
     mid_id = uuid.uuid4().hex[:10]
     out = os.path.join(OUT_DIR, f"{mid_id}.mid")
     try:
-        info = hum2midi.hum_to_midi_file(_to_wav(raw), out)
+        info = hum2midi.hum_to_midi_file(_to_wav(raw), out, tempo_bpm=bpm, bars=bars, count_in_s=count_in_s)
     except ValueError as e:
         raise HTTPException(400, str(e))
     track = live.create_midi_track(track_name) if add_track else None
     pitches = info.pop("pitches")
     instrument = samples.suggest_for_melody(pitches)
-    # most-sung pitch class, as analyze_hum does — the Stack tab uses it as the session key
+    # most-sung pitch class, as analyze_hum does — informational; the Stack key box doesn't take it
     key_center = NOTE_NAMES[int(np.argmax(np.bincount(np.array(pitches) % 12, minlength=12)))]
     return {"midi": f"/midi/{mid_id}", "info": info, "track": track, "instrument": instrument, "key_center": key_center,
             "say": f"{info['note_count']} notes at {info['tempo']} bpm, starting around {info['notes'][0] if info['notes'] else '?'}. "
