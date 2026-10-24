@@ -479,7 +479,9 @@ async def samples_match(audio: UploadFile = File(...), k: int = Form(3)):
     if not f:
         raise HTTPException(400, "Too short to fingerprint.")
     idx = samples.index()
-    return {"guess": samples.tag(f), "features": f, "matches": samples.nearest(f, idx.get("items", []), k=k)}
+    guess = samples.tag(f)
+    # compare within the guessed tag only: library features are loaded lazily, per file
+    return {"guess": guess, "features": f, "matches": samples.nearest(f, idx.get("items", []), k=k, want_tag=guess)}
 
 
 @app.get("/samples/pick")

@@ -49,9 +49,9 @@ def features(y, sr=SR):
     }
 
 
-def tag(feat, name=""):
+def name_tag(name):
+    """Tag from a filename or folder name alone, or None."""
     n = name.lower()
-    # filename first — producers name things. then the spectrum.
     for word, t in [("kick", "kick"), ("bd", "kick"), ("808", "bass"), ("snare", "snare"), ("clap", "snare"),
                     ("rim", "snare"), ("hat", "hat"), ("hh", "hat"), ("cymbal", "hat"), ("ride", "hat"),
                     ("bass", "bass"), ("sub", "bass"), ("pad", "pad"), ("synth", "synth"), ("lead", "synth"),
@@ -59,6 +59,25 @@ def tag(feat, name=""):
                     ("impact", "fx"), ("loop", "loop"), ("perc", "perc"), ("shaker", "perc")]:
         if word in n:
             return t
+    return None
+
+
+def path_tag(path, bpm=None):
+    """Index-time tag without touching the audio: filename, then the two nearest folders ("…/Leads/Wet/x.wav",
+    "…/Kicks/x.wav"), then "loop" if the name carries a tempo."""
+    parent = os.path.dirname(path)
+    for part in (os.path.basename(path), os.path.basename(parent), os.path.basename(os.path.dirname(parent))):
+        t = name_tag(part)
+        if t:
+            return t
+    return "loop" if bpm else "other"
+
+
+def tag(feat, name=""):
+    # filename first — producers name things. then the spectrum.
+    t = name_tag(name) if name else None
+    if t:
+        return t
     if feat["dur"] > 2.0:
         return "loop"
     if feat["low"] > 0.5 and feat["dur"] < 1.5:
@@ -150,26 +169,30 @@ LOOP_WORDS = {"drums": ("drum", "beat", "perc"), "bass": ("bass",),
 def pick(idx, want_tag, key_text="", bpm=None, k=5):
     """Up to k library candidates for a stack row with the right tag. With bpm: exact tempo first, then within
     3%, unknown, far. Within a tempo tier: in-key, unkeyed, clashing keys.
-    Tags/keys/bpm are recomputed from the cached features + filename so new rules work without a rescan."""
+    Tag/key/bpm come from the index (filenames only), so rule changes need a rescan — which takes seconds."""
     want = parse_key(key_text, loose=True) if key_text else None
     tags = GROUPS.get(want_tag, {want_tag})
     scored = []
     for it in idx.get("items", []):
-        t, n = tag(it, it["name"]), it["name"].lower()
+        t, n = it["tag"], it["name"].lower()
         if t not in tags and not (t == "loop" and any(w in n for w in LOOP_WORDS.get(want_tag, ()))):
             continue
-        stem = os.path.splitext(it["name"])[0]
-        sk, sb = parse_key(stem), parse_bpm(stem)
+        sk, sb = it["key"], it["bpm"]
         tt = tempo_tier(sb, bpm) if bpm else "unknown"
         scored.append((TEMPO_TIERS.index(tt), -key_score(sk, want), random.random(), it, sk, sb, tt))
     scored.sort(key=lambda x: x[:3])
-    return [{"name": it["name"], "path": it["path"], "tag": tag(it, it["name"]), "key": key_name(sk), "key_match": ks < 0,
+    return [{"name": it["name"], "path": it["path"], "tag": it["tag"], "key": key_name(sk), "key_match": ks < 0,
              "bpm": sb, "tempo": tt}
             for _, ks, _, it, sk, sb, tt in scored[:k]]
 
 
+_paths = {}                # index key -> set of paths, for /sample/file's allow-list check
+
+
 def in_index(idx, path):
-    return any(it["path"] == path for it in idx.get("items", []))
+    if idx.get("key") not in _paths:
+        _paths[idx.get("key")] = {it["path"] for it in idx.get("items", [])}
+    return path in _paths[idx.get("key")]
 
 
 # --------------------------------------------------------------------- index
@@ -182,30 +205,69 @@ def _walk(dirs):
                     yield os.path.join(root, fn)
 
 
-def index(dirs=None, limit=3000, force=False):
+INDEX_VERSION = 2          # bump when the item shape or naming rules change, so old caches rebuild
+_idx_mem = {}              # cache key -> index, so pick/file requests don't re-read the JSON every time
+
+
+def index(dirs=None, force=False):
+    """Filenames only — path, name, tag, key, bpm. No audio is opened, so thousands of files take seconds.
+    Audio features are computed later, per file, only when matching needs them (file_features)."""
     dirs = dirs or [d for d in os.getenv("SAMPLE_DIRS", "").split(":") if d]
     if not dirs:
         return {"count": 0, "dirs": [], "error": "Set SAMPLE_DIRS=/path/one:/path/two in .env"}
-    key = hashlib.md5(":".join(sorted(dirs)).encode()).hexdigest()[:8]
-    if not force and os.path.exists(CACHE):
-        cached = json.load(open(CACHE))
-        if cached.get("key") == key:
-            return cached
+    key = hashlib.md5(f"v{INDEX_VERSION}:{':'.join(sorted(dirs))}".encode()).hexdigest()[:8]
+    if not force:
+        if key in _idx_mem:
+            return _idx_mem[key]
+        if os.path.exists(CACHE):
+            cached = json.load(open(CACHE))
+            if cached.get("key") == key:
+                _idx_mem[key] = cached
+                return cached
     items = []
-    for i, p in enumerate(_walk(dirs)):
-        if i >= limit:
-            break
-        try:
-            y, _ = librosa.load(p, sr=SR, mono=True, duration=3.0)
-            f = features(y)
-            if f:
-                items.append({"path": p, "name": os.path.basename(p), "tag": tag(f, os.path.basename(p)), **f})
-        except Exception:
-            continue
+    for p in _walk(dirs):
+        name = os.path.basename(p)
+        stem = os.path.splitext(name)[0]
+        k, bpm = parse_key(stem), parse_bpm(stem)
+        items.append({"path": p, "name": name, "tag": path_tag(p, bpm), "key": k, "bpm": bpm})
     out = {"key": key, "dirs": dirs, "count": len(items), "items": items,
            "tags": {t: sum(1 for it in items if it["tag"] == t) for t in TAGS}}
     json.dump(out, open(CACHE, "w"))
+    _idx_mem.clear(); _idx_mem[key] = out; _paths.pop(key, None)
     return out
+
+
+# --------------------------------------------------------------------- lazy features
+
+FEAT_CACHE = os.path.join(os.path.dirname(__file__), ".sample_features.json")
+_feats = None              # path -> {"mtime": float, "f": features | None}
+
+
+def file_features(path):
+    """The 7 features for one library file, computed on first use and cached per path (invalidated by mtime).
+    Call save_features() after a batch."""
+    global _feats
+    if _feats is None:
+        _feats = json.load(open(FEAT_CACHE)) if os.path.exists(FEAT_CACHE) else {}
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return None
+    e = _feats.get(path)
+    if e and e["mtime"] == mtime:
+        return e["f"]
+    try:
+        y, _ = librosa.load(path, sr=SR, mono=True, duration=3.0)
+        f = features(y)
+    except Exception:
+        f = None
+    _feats[path] = {"mtime": mtime, "f": f}
+    return f
+
+
+def save_features():
+    if _feats is not None:
+        json.dump(_feats, open(FEAT_CACHE, "w"))
 
 
 # --------------------------------------------------------------------- match
@@ -217,14 +279,24 @@ def _vec(f):
     return np.array([f[k] * _SCALE[k] for k in FEAT_KEYS])
 
 
+MATCH_POOL = 300           # most files whose features one match may load; first run ~10 ms each, then cached
+
+
 def nearest(feat, items, k=3, want_tag=None):
     pool = [it for it in items if (want_tag is None or it["tag"] == want_tag)]
     if not pool:
         pool = items
     if not pool:
         return []
+    if len(pool) > MATCH_POOL:                                 # stable subset, so the feature cache keeps hitting
+        pool = random.Random(0).sample(pool, MATCH_POOL)
     v = _vec(feat)
-    d = [(float(np.linalg.norm(_vec(it) - v)), it) for it in pool]
+    d = []
+    for it in pool:
+        f = file_features(it["path"])
+        if f:
+            d.append((float(np.linalg.norm(_vec(f) - v)), it))
+    save_features()
     d.sort(key=lambda x: x[0])
     return [{"name": it["name"], "path": it["path"], "tag": it["tag"], "distance": round(dist, 3)} for dist, it in d[:k]]
 

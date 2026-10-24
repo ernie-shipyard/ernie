@@ -69,6 +69,7 @@
       <label class="status">Tempo <input id="stTempo" type="number" min="40" max="240" value="120" style="width:80px"> bpm</label>
       <label class="status">Key <input id="stKey" type="text" value="C" style="width:90px" placeholder="C, Am, F#maj"></label>
       <span class="status" id="stKeyNote"></span>
+      <span class="status" id="stScan" style="margin-left:auto"></span><button id="stRescan" class="ghost" style="padding:6px 12px;font-size:13px">⟳ Rescan</button>
     </div>
     <div class="row" style="margin-top:12px"><button id="playStack">▶ Play stack</button><button id="stopStack" class="ghost" disabled>■ Stop</button><span class="status" id="sPlay"></span></div>
     <div id="stackRows" style="margin-top:8px"></div>
@@ -322,6 +323,16 @@ LAYERS.forEach(L => {
     } catch (e) { status.textContent = e.message; }
   };
 });
+
+// library size in the header; Rescan forces a fresh filename scan (seconds, even for thousands of files)
+async function showScan(force) {
+  $("stScan").textContent = force ? "scanning…" : "";
+  const fd = new FormData(); if (force) fd.append("force", "true");
+  try { const j = await api("/samples/scan", fd); $("stScan").textContent = j.error || `scanned ${j.count.toLocaleString()} files`; }
+  catch (e) { $("stScan").textContent = e.message; }
+}
+$("stRescan").onclick = () => showScan(true);
+showScan(false);
 
 // ---------- stack playback: every row's chosen audio from one AudioContext start time, cycling 2 bars at
 // the session tempo. Drums/FX audio without a bpm is a one-shot fired on beat 1 of each bar; everything else
