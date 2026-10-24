@@ -6,6 +6,18 @@ import mido
 
 SR = 22050
 
+# beatbox hit classification (classify_hit / beatbox_to_midi_file)
+HIT_WIN_S = 0.09            # analysis window after each onset
+GATE_RATIO = 0.25           # drop onsets whose window peak < this * loudest hit in the take
+LOW_HZ, HIGH_HZ = 180, 2500  # band edges: low < LOW_HZ <= mid < HIGH_HZ <= high
+KICK_LOW = 0.35             # kick if low ratio above this ...
+KICK_CENTROID_HZ = 600      # ... or centroid below this (laptop mics lose the sub)
+HAT_HIGH = 0.55             # hat if high ratio above this ...
+HAT_CENTROID_HZ = 2500      # ... or centroid above this
+TIE_HIGH = (0.4, 0.55)      # ambiguous zone: high ratio in this range and centroid between the two above
+DECAY_REL = 0.3             # decay = time RMS stays above this fraction of its peak
+DECAY_HAT_MAX_S = 0.15      # in the ambiguous zone, shorter decay than this = hat, else snare
+
 
 def load(path):
     y, _ = librosa.load(path, sr=SR, mono=True)
@@ -88,28 +100,39 @@ def hum_to_midi_file(wav_path, out_path, tempo_bpm=None):
 KICK, SNARE, HAT = 36, 38, 42  # General MIDI, which is also Ableton's default drum rack mapping
 
 
-def classify_hit(y, t, sr=SR, win=0.09):
-    """Band-energy vote. Beatbox kicks are low thumps, hats are short bright hiss,
-    snares are noisy but carry mid energy and ring longer."""
+def classify_hit(y, t, sr=SR, win=HIT_WIN_S):
+    """Band-energy + centroid vote. Beatbox kicks are low thumps (on a laptop mic that means
+    a low centroid, not sub energy), hats are bright hiss, snares are everything in between.
+    Decay length only breaks ties in the ambiguous zone: real snares ring longer than hats."""
     i = int(t * sr); seg = y[i: i + int(win * sr)]
     if len(seg) < 256:
         return HAT
     S = np.abs(np.fft.rfft(seg * np.hanning(len(seg)))) ** 2
     freqs = np.fft.rfftfreq(len(seg), 1 / sr)
     tot = S.sum() + 1e-9
-    low = S[freqs < 180].sum() / tot
-    mid = S[(freqs >= 180) & (freqs < 2500)].sum() / tot
-    high = S[freqs >= 2500].sum() / tot
-    if low > 0.35:
+    low = S[freqs < LOW_HZ].sum() / tot
+    high = S[freqs >= HIGH_HZ].sum() / tot
+    centroid = (S * freqs).sum() / tot
+    if low > KICK_LOW or centroid < KICK_CENTROID_HZ:
         return KICK
-    if high > 0.7 and mid < 0.25:
+    if high > HAT_HIGH or centroid > HAT_CENTROID_HZ:
         return HAT
+    if TIE_HIGH[0] <= high <= TIE_HIGH[1]:
+        r = librosa.feature.rms(y=y[i: i + int(0.5 * sr)], frame_length=512, hop_length=128, center=False)[0]
+        if len(r):
+            p = int(np.argmax(r)); below = np.nonzero(r[p:] < DECAY_REL * r[p])[0]
+            decay = (p + (below[0] if len(below) else len(r) - p)) * 128 / sr
+            if decay < DECAY_HAT_MAX_S:
+                return HAT
     return SNARE
 
 
 def beatbox_to_midi_file(wav_path, out_path, tempo_bpm=None):
     y = np.concatenate([np.zeros(int(0.05 * SR)), load(wav_path)])  # pad so a hit at t=0 is caught
     onsets = librosa.onset.onset_detect(y=y, sr=SR, units="time", backtrack=True, delta=0.08)
+    peaks = np.array([np.max(np.abs(y[int(t * SR): int((t + HIT_WIN_S) * SR)]), initial=0.0) for t in onsets])
+    if len(peaks):
+        onsets = onsets[peaks >= GATE_RATIO * peaks.max()]   # drop breath / room-tail ghost onsets
     if len(onsets) < 2:
         raise ValueError("Didn't hear hits — try harder consonants: 'b', 'k', 'ts'.")
     if tempo_bpm is None:
