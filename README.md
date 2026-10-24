@@ -1,31 +1,47 @@
-# hum
+# foldback
 
-Hum a melody. Get a full track. Then tell it what to change — out loud.
+A loud little studio assistant that lives next to your DAW. It reads your Ableton set, knows what plugins and samples you're using, gives you mixing notes out loud (with a personality), turns your humming into MIDI or a full track, and lets you argue with it by voice.
 
-Built at Tech@NYU Shipyard (Oct 24, 2026) for the Best Use of ElevenLabs track.
+Built at Tech@NYU Shipyard, Oct 24 2026, for the Best Use of ElevenLabs track.
 
-## How it works
+## What it does
 
-1. **Hum** into the mic. `librosa` pulls out tempo, pitch contour, key center, range and dynamics.
-2. Those become a natural-language brief, which the **ElevenLabs Music API** turns into an original track.
-3. **Talk back** — "slower and warmer", "make it sad", "swap in a piano". **ElevenLabs Scribe v2** transcribes it, the brief is edited, and the track is recomposed.
-
-No typing anywhere in the loop.
+| Tab | What happens | ElevenLabs |
+|---|---|---|
+| **Session** | Reads tempo, tracks, devices/plugins, clips and sample files from the live Ableton set | — |
+| **Mix notes** | Rule-based notes on the session graph (no sidechain on bass, everything panned center, 3× compressor, a sample called `final_FINAL`), or spectral notes on an exported bounce (mud, crushed dynamics, missing top end). Spoken in character. | Text to Speech |
+| **Talk to it** | Hold the mic and ask: what plugins am I using, what's the tempo, which samples are in here | Scribe v2 + TTS |
+| **Hum → MIDI** | Hum a melody → quantized `.mid` and a new MIDI track in Live. Beatbox → kick/snare/hat `.mid` on a drum-rack mapping. | — |
+| **Hum → Track** | Hum → analysed → full instrumental track; then say "slower and warmer" to recompose | Music API + Scribe v2 |
 
 ## Run it
 
 ```bash
-brew install ffmpeg            # or apt install ffmpeg
+brew install ffmpeg                      # or apt install ffmpeg
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env           # paste your ELEVENLABS_API_KEY
+cp .env.example .env                     # paste ELEVENLABS_API_KEY
 uvicorn app:app --reload
 ```
+Open http://localhost:8000.
 
-Open http://localhost:8000 — the browser will ask for mic access.
+**Without Ableton** (demo laptop, judging table): set `FOLDBACK_MOCK=1` in `.env` and it reads `foldback/session.mock.json`.
 
-> The Music API requires a paid ElevenLabs tier. Check `GET /health` to confirm the key loaded.
+**With Ableton Live 11/12:** install [AbletonOSC](https://github.com/ideoforms/AbletonOSC) — copy the `AbletonOSC` folder into `~/Music/Ableton/User Library/Remote Scripts/`, then in Live: Settings → Link/Tempo/MIDI → Control Surface → **AbletonOSC**. foldback talks to it on UDP 11000/11001.
 
-## Stack
+## Personality
 
-FastAPI · librosa · ElevenLabs Music API (`music_v2_5`) · ElevenLabs Scribe v2 · vanilla JS + MediaRecorder
+`foldback/persona.py` holds the system prompt and a template-driven script that works with no LLM at all. Set `LLM_BASE_URL` / `LLM_API_KEY` (any OpenAI-compatible endpoint; Grok's is) and the same facts get rewritten with more range.
+
+## Layout
+
+```
+app.py                  FastAPI routes
+foldback/live.py        Ableton session reader/writer (AbletonOSC) + mock
+foldback/advise.py      structural + spectral mixing notes, inventory
+foldback/persona.py     the voice: prompt, script, LLM rewrite, TTS
+foldback/hum2midi.py    hum → melody MIDI, beatbox → drum MIDI
+static/index.html       the whole UI
+```
+
+MIT.

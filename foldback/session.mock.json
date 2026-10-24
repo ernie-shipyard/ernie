@@ -1,0 +1,19 @@
+{
+  "tempo": 124.0,
+  "tracks": [
+    {"index": 0, "name": "Kick", "volume": 0.85, "pan": 0.0, "is_midi": true,
+     "devices": ["Drum Rack", "Saturator"], "clips": [{"slot": 0, "name": "Kick", "file_path": ""}]},
+    {"index": 1, "name": "Bass", "volume": 0.92, "pan": 0.0, "is_midi": true,
+     "devices": ["Serum", "EQ Eight"], "clips": [{"slot": 0, "name": "Bass", "file_path": ""}]},
+    {"index": 2, "name": "Audio 3", "volume": 0.85, "pan": 0.0, "is_midi": false,
+     "devices": [], "clips": [{"slot": 0, "name": "vocal_take_07_final_FINAL", "file_path": "/Users/kristyn/Samples/vocal_take_07_final_FINAL.wav"}]},
+    {"index": 3, "name": "Pad", "volume": 0.85, "pan": 0.0, "is_midi": true,
+     "devices": ["Wavetable", "Reverb", "Reverb"], "clips": [{"slot": 0, "name": "Pad", "file_path": ""}]},
+    {"index": 4, "name": "Hats", "volume": 0.95, "pan": 0.0, "is_midi": true,
+     "devices": ["Drum Rack"], "clips": []},
+    {"index": 5, "name": "Lead", "volume": 0.85, "pan": 0.0, "is_midi": true,
+     "devices": ["Operator", "Auto Filter", "Compressor", "Compressor", "Compressor"], "clips": [{"slot": 0, "name": "Lead", "file_path": ""}]}
+  ],
+  "returns": [],
+  "master_devices": ["Limiter"]
+}

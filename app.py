@@ -1,10 +1,13 @@
 """
-hum — hum a melody, get a track, revise it by talking.
+foldback — a loud little studio assistant that lives next to your DAW.
 
-Pipeline:
-  1. browser records a hum   -> POST /analyze   -> tempo + pitch contour -> text prompt
-  2. prompt                   -> POST /compose   -> ElevenLabs Music API  -> mp3
-  3. browser records speech   -> POST /revise    -> Scribe v2 transcribes -> prompt edited -> /compose again
+  /session        read the Ableton set (or the mock)            -> inventory: DAW, plugins, samples
+  /advise         structural mix notes, spoken in character     -> text + mp3
+  /advise/audio   upload a bounce -> spectral notes, spoken     -> text + mp3
+  /ask            talk to it (Scribe) about the session          -> answer, spoken
+  /midi/hum       hum  -> .mid melody   (+ new MIDI track in Live)
+  /midi/beatbox   beatbox -> .mid drums (+ new MIDI track in Live)
+  /analyze /compose /revise   hum -> full audio track via ElevenLabs Music, revise by voice
 """
 
 import io
@@ -22,12 +25,14 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from elevenlabs.client import ElevenLabs
 
+from foldback import live, advise, persona, hum2midi
+
 load_dotenv()
 
-app = FastAPI(title="hum")
+app = FastAPI(title="foldback")
 eleven = ElevenLabs(api_key=os.getenv("ELEVENLABS_API_KEY"))
 
-OUT_DIR = os.path.join(tempfile.gettempdir(), "hum_tracks")
+OUT_DIR = os.path.join(tempfile.gettempdir(), "foldback_out")
 os.makedirs(OUT_DIR, exist_ok=True)
 
 DEFAULT_LENGTH_MS = int(os.getenv("TRACK_LENGTH_MS", "15000"))
@@ -228,6 +233,106 @@ async def revise(audio: UploadFile = File(...), prompt: str = Form(...)):
     return {"heard": heard, "prompt": new_prompt, "applied": applied}
 
 
+# ---------------------------------------------------------------- session / advice / voice
+
+def _session_or_503():
+    try:
+        return live.read_session()
+    except Exception as e:
+        raise HTTPException(503, f"Can't reach Ableton: {e}. Set FOLDBACK_MOCK=1 to demo without Live.")
+
+
+def _speak(text: str) -> str:
+    """TTS -> file id. Never let TTS failure kill the response."""
+    try:
+        sid = uuid.uuid4().hex[:10]
+        persona.tts(eleven, text, os.path.join(OUT_DIR, f"{sid}.mp3"))
+        return f"/track/{sid}"
+    except Exception:
+        return ""
+
+
+@app.get("/session")
+def session():
+    s = _session_or_503()
+    return {"inventory": advise.inventory(s), "session": s.to_dict()}
+
+
+@app.post("/advise")
+def advise_route(speak: bool = Form(True)):
+    s = _session_or_503()
+    notes = advise.structural_notes(s)
+    inv = advise.inventory(s)
+    script = persona.llm_rewrite(persona.script_from_notes(notes, inv))
+    return {"notes": notes, "inventory": inv, "script": script, "audio": _speak(script) if speak else ""}
+
+
+@app.post("/advise/audio")
+async def advise_audio(audio: UploadFile = File(...), speak: bool = Form(True)):
+    raw = await audio.read()
+    p = os.path.join(OUT_DIR, f"bounce_{uuid.uuid4().hex[:6]}{os.path.splitext(audio.filename)[1] or '.wav'}")
+    open(p, "wb").write(raw)
+    try:
+        notes, bands = advise.sonic_notes(p)
+    except Exception as e:
+        raise HTTPException(400, f"Couldn't analyze that file: {e}")
+    script = persona.llm_rewrite(persona.script_from_notes(notes))
+    return {"notes": notes, "bands": bands, "script": script, "audio": _speak(script) if speak else ""}
+
+
+@app.post("/ask")
+async def ask(audio: UploadFile = File(None), text: str = Form("")):
+    if audio is not None and not text:
+        raw = await audio.read()
+        try:
+            text = eleven.speech_to_text.convert(file=io.BytesIO(raw), model_id="scribe_v2",
+                                                 language_code="eng", tag_audio_events=False, diarize=False).text
+        except Exception as e:
+            raise HTTPException(502, f"Scribe error: {e}")
+    s = _session_or_503()
+    inv, notes = advise.inventory(s), advise.structural_notes(s)
+    reply = persona.answer_question(text, inv, notes)
+    return {"heard": text, "reply": reply, "audio": _speak(reply)}
+
+
+# ---------------------------------------------------------------- hum / beatbox -> MIDI
+
+@app.post("/midi/hum")
+async def midi_hum(audio: UploadFile = File(...), add_track: bool = Form(True)):
+    raw = await audio.read()
+    mid_id = uuid.uuid4().hex[:10]
+    out = os.path.join(OUT_DIR, f"{mid_id}.mid")
+    try:
+        info = hum2midi.hum_to_midi_file(_to_wav(raw), out)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    track = live.create_midi_track("foldback melody") if add_track else None
+    return {"midi": f"/midi/{mid_id}", "info": info, "track": track,
+            "say": f"{info['note_count']} notes at {info['tempo']} bpm. Drag the file onto the new track. You hummed in {info['notes'][0] if info['notes'] else '?'}, roughly."}
+
+
+@app.post("/midi/beatbox")
+async def midi_beatbox(audio: UploadFile = File(...), add_track: bool = Form(True)):
+    raw = await audio.read()
+    mid_id = uuid.uuid4().hex[:10]
+    out = os.path.join(OUT_DIR, f"{mid_id}.mid")
+    try:
+        info = hum2midi.beatbox_to_midi_file(_to_wav(raw), out)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    track = live.create_midi_track("foldback drums") if add_track else None
+    return {"midi": f"/midi/{mid_id}", "info": info, "track": track,
+            "say": f"{info['hits']} hits: {info['kick']} kicks, {info['snare']} snares, {info['hat']} hats at {info['tempo']} bpm. Load a Drum Rack on the new track and drop this in."}
+
+
+@app.get("/midi/{mid_id}")
+def get_midi(mid_id: str):
+    path = os.path.join(OUT_DIR, f"{mid_id}.mid")
+    if not os.path.exists(path):
+        raise HTTPException(404)
+    return FileResponse(path, media_type="audio/midi", filename=f"foldback_{mid_id}.mid")
+
+
 @app.get("/track/{track_id}")
 def get_track(track_id: str):
     path = os.path.join(OUT_DIR, f"{track_id}.mp3")
@@ -238,7 +343,8 @@ def get_track(track_id: str):
 
 @app.get("/health")
 def health():
-    return {"ok": True, "has_key": bool(os.getenv("ELEVENLABS_API_KEY"))}
+    return {"ok": True, "has_key": bool(os.getenv("ELEVENLABS_API_KEY")), "mock": live.MOCK,
+            "llm": bool(os.getenv("LLM_API_KEY"))}
 
 
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
