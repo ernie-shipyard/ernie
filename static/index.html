@@ -43,6 +43,7 @@
   button.chip { background:transparent; font-weight:400; cursor:pointer; }
   button.chip.on { border-color:var(--acc); color:var(--fg); }
   .key { color:var(--acc); }
+  .bpm { color:var(--mute); } .bpm.far { color:var(--med); } button.chip.far { border-color:var(--med); }
   .strip { display:flex; gap:4px; flex-wrap:wrap; margin-top:10px; font-family:ui-monospace,monospace; font-size:12px; }
   .strip span { background:#0a0a0c; border-radius:6px; padding:3px 7px; color:#cfcbbf; }
   input[type=text], input[type=number] { font:inherit; background:#222; color:var(--fg); border:1px solid #333; border-radius:10px; padding:6px 10px; }
@@ -208,7 +209,9 @@ const keyPhrase = t => {
   return m[1].toUpperCase() + m[2] + mode;
 };
 const esc = t => String(t).replace(/[&<>"]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" })[c]);
-const stack = {};   // layer id -> { chosen: {name, url, key?}, candidates: [], prompt: last generation prompt }
+const stack = {};   // layer id -> { chosen: {name, url, key?, bpm?, tempo?}, candidates: [], prompt: last generation prompt }
+// "130 bpm" tag; amber when it's far (>3%) from the session tempo
+const bpmTag = x => x.bpm ? ` <span class="bpm ${x.tempo === "far" ? "far" : ""}">${x.tempo === "far" ? "⚠ " : ""}${x.bpm} bpm</span>` : "";
 // key box: defaults to the last hummed melody's key_center (Hum → Track), else C; a hand edit wins
 const store = { get: k => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
 let keyEdited = false;
@@ -222,11 +225,11 @@ $("stKey").oninput = () => { keyEdited = true; $("stKeyNote").textContent = ""; 
 
 function renderLayer(L) {
   const st = stack[L.id] ||= { chosen: null, candidates: [] }, el = $("layer-" + L.id), c = st.chosen;
-  el.querySelector(".slot").innerHTML = c ? `<b>${esc(c.name)}</b>${c.key ? ` <span class="key">${esc(c.key)}</span>` : ""}` : "nothing chosen";
+  el.querySelector(".slot").innerHTML = c ? `<b>${esc(c.name)}</b>${c.key ? ` <span class="key">${esc(c.key)}</span>` : ""}${bpmTag(c)}` : "nothing chosen";
   el.querySelector(".prev").disabled = !c;
   el.querySelector(".prompt").textContent = st.prompt ? `prompt: ${st.prompt}` : "";
   el.querySelector(".cands").innerHTML = st.candidates.map((x, i) =>
-    `<button class="chip${c && c.url === x.url ? " on" : ""}" data-i="${i}">${esc(x.name)}${x.key ? ` · <span class="key">${esc(x.key)}</span>` : ""}</button>`).join("");
+    `<button class="chip${c && c.url === x.url ? " on" : ""}${x.tempo === "far" ? " far" : ""}" data-i="${i}">${esc(x.name)}${x.key ? ` · <span class="key">${esc(x.key)}</span>` : ""}${x.bpm ? " ·" + bpmTag(x) : ""}</button>`).join("");
   el.querySelectorAll(".cands button").forEach(b => b.onclick = () => { st.chosen = st.candidates[+b.dataset.i]; renderLayer(L); play(el.querySelector("audio"), st.chosen.url); });
 }
 $("stackRows").innerHTML = LAYERS.map(L => `<div class="layer" id="layer-${L.id}">
@@ -239,7 +242,7 @@ LAYERS.forEach(L => {
   el.querySelector(".pick").onclick = async () => {
     status.textContent = "Searching the library…";
     try {
-      const r = await fetch(`/samples/pick?tag=${L.tag}&key=${encodeURIComponent($("stKey").value.trim())}`), j = await r.json();
+      const r = await fetch(`/samples/pick?tag=${L.tag}&key=${encodeURIComponent($("stKey").value.trim())}&bpm=${+$("stTempo").value || 120}`), j = await r.json();
       if (!r.ok) throw new Error(j.detail || r.statusText);
       const st = stack[L.id];
       st.candidates = j.candidates.map(x => ({ ...x, url: "/sample/file?path=" + encodeURIComponent(x.path) }));
@@ -257,7 +260,9 @@ LAYERS.forEach(L => {
     if (L.gen === "loop") fd.append("length_ms", 8000);
     try {
       const j = await api(L.gen === "oneshot" ? "/generate/oneshot" : "/compose", fd);
-      st.prompt = j.prompt; st.chosen = { name: L.gen === "oneshot" ? "generated one-shot" : "generated 8 s loop", url: j.url };
+      // generated loops are assumed to be at the session tempo they were prompted with; one-shots have none
+      st.prompt = j.prompt; st.chosen = L.gen === "oneshot" ? { name: "generated one-shot", url: j.url }
+        : { name: "generated 8 s loop", url: j.url, bpm: +$("stTempo").value || 120, tempo: "exact" };
       status.textContent = ""; renderLayer(L); play(el.querySelector("audio"), j.url);
     } catch (e) { status.textContent = e.message; }
     finally { btns.forEach(b => b.disabled = false); }
@@ -278,6 +283,7 @@ LAYERS.forEach(L => {
       const j = await api("/midi/hum", fd), more = j.info.note_count - j.info.notes.length;
       el.querySelector(".humOut").innerHTML = `<div class="strip">${j.info.notes.map(n => `<span>${esc(n)}</span>`).join("")}${more > 0 ? `<span>+${more} more</span>` : ""}</div>
         <p class="fix"><a class="dl" href="${j.midi}" download>⬇ download .mid</a> · ${j.info.note_count} notes at ${j.info.tempo} bpm${j.track ? ` · new track in Live: <b>${esc(L.label)}</b>` : ""}</p>`;
+      keyEdited = false; rememberKey(j.key_center);   // a fresh hum sets the key, even over a hand edit
       status.textContent = "";
     } catch (e) { status.textContent = e.message; }
   });

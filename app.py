@@ -323,8 +323,11 @@ async def midi_hum(audio: UploadFile = File(...), add_track: bool = Form(True), 
     except ValueError as e:
         raise HTTPException(400, str(e))
     track = live.create_midi_track(track_name) if add_track else None
-    instrument = samples.suggest_for_melody(info.pop("pitches"))
-    return {"midi": f"/midi/{mid_id}", "info": info, "track": track, "instrument": instrument,
+    pitches = info.pop("pitches")
+    instrument = samples.suggest_for_melody(pitches)
+    # most-sung pitch class, as analyze_hum does — the Stack tab uses it as the session key
+    key_center = NOTE_NAMES[int(np.argmax(np.bincount(np.array(pitches) % 12, minlength=12)))]
+    return {"midi": f"/midi/{mid_id}", "info": info, "track": track, "instrument": instrument, "key_center": key_center,
             "say": f"{info['note_count']} notes at {info['tempo']} bpm, starting around {info['notes'][0] if info['notes'] else '?'}. "
                    f"That register wants {instrument}. Drag the file onto the new track."}
 
@@ -412,13 +415,13 @@ async def samples_match(audio: UploadFile = File(...), k: int = Form(3)):
 
 
 @app.get("/samples/pick")
-def samples_pick(tag: str, key: str = "", k: int = 5):
-    """Stack row -> up to k library candidates for that layer, in-key ones first."""
+def samples_pick(tag: str, key: str = "", bpm: float | None = None, k: int = 5):
+    """Stack row -> up to k library candidates for that layer, closest tempo then in-key first."""
     idx = samples.index()
     if idx.get("error"):
         raise HTTPException(400, idx["error"])
     want = samples.parse_key(key, loose=True) if key else None
-    return {"tag": tag, "key": samples.key_name(want), "candidates": samples.pick(idx, tag, key, k=k)}
+    return {"tag": tag, "key": samples.key_name(want), "bpm": bpm, "candidates": samples.pick(idx, tag, key, bpm=bpm, k=k)}
 
 
 @app.get("/sample/file")

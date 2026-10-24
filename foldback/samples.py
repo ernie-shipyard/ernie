@@ -115,15 +115,42 @@ def key_score(sample_key, want):
     return -1
 
 
+# --------------------------------------------------------------------- tempo
+
+_BPM_TAG = re.compile(r"(\d{2,3})[ _-]?bpm", re.I)                 # "120bpm", "75_bpm"
+_BPM_TOKEN = re.compile(r"(?:^|[ _-])(\d{2,3})(?=[ _-]|$)")        # "_130_", "124_" — a bare number token
+
+
+def parse_bpm(name):
+    """Tempo from a filename (without extension), or None. Only 60–200 counts, so "808", "_12_" or "_01" don't."""
+    for rx in (_BPM_TAG, _BPM_TOKEN):
+        for m in rx.finditer(name):
+            if 60 <= int(m.group(1)) <= 200:
+                return int(m.group(1))
+    return None
+
+
+TEMPO_TIERS = ["exact", "near", "unknown", "far"]                   # pick() rank order
+
+
+def tempo_tier(sample_bpm, want_bpm):
+    if not sample_bpm:
+        return "unknown"
+    if abs(sample_bpm - want_bpm) < 0.5:
+        return "exact"
+    return "near" if abs(sample_bpm - want_bpm) <= 0.03 * want_bpm else "far"
+
+
 GROUPS = {"drums": {"kick", "snare", "hat", "perc"}}
 # "loop"-tagged files also count for a row when the filename names that layer ("drum_loop_124", "perc_loop")
 LOOP_WORDS = {"drums": ("drum", "beat", "perc"), "bass": ("bass",),
               "pad": ("pad", "synth", "keys"), "synth": ("pad", "synth", "keys")}
 
 
-def pick(idx, want_tag, key_text="", k=5):
-    """Up to k library candidates for a stack row: right tag, in-key first, then unkeyed, clashing keys last.
-    Tags/keys are recomputed from the cached features + filename so new keywords work without a rescan."""
+def pick(idx, want_tag, key_text="", bpm=None, k=5):
+    """Up to k library candidates for a stack row with the right tag. With bpm: exact tempo first, then within
+    3%, unknown, far. Within a tempo tier: in-key, unkeyed, clashing keys.
+    Tags/keys/bpm are recomputed from the cached features + filename so new rules work without a rescan."""
     want = parse_key(key_text, loose=True) if key_text else None
     tags = GROUPS.get(want_tag, {want_tag})
     scored = []
@@ -131,11 +158,14 @@ def pick(idx, want_tag, key_text="", k=5):
         t, n = tag(it, it["name"]), it["name"].lower()
         if t not in tags and not (t == "loop" and any(w in n for w in LOOP_WORDS.get(want_tag, ()))):
             continue
-        sk = parse_key(os.path.splitext(it["name"])[0])
-        scored.append((key_score(sk, want), random.random(), it, sk))
-    scored.sort(key=lambda x: (-x[0], x[1]))
-    return [{"name": it["name"], "path": it["path"], "tag": tag(it, it["name"]), "key": key_name(sk), "key_match": sc > 0}
-            for sc, _, it, sk in scored[:k]]
+        stem = os.path.splitext(it["name"])[0]
+        sk, sb = parse_key(stem), parse_bpm(stem)
+        tt = tempo_tier(sb, bpm) if bpm else "unknown"
+        scored.append((TEMPO_TIERS.index(tt), -key_score(sk, want), random.random(), it, sk, sb, tt))
+    scored.sort(key=lambda x: x[:3])
+    return [{"name": it["name"], "path": it["path"], "tag": tag(it, it["name"]), "key": key_name(sk), "key_match": ks < 0,
+             "bpm": sb, "tempo": tt}
+            for _, ks, _, it, sk, sb, tt in scored[:k]]
 
 
 def in_index(idx, path):
