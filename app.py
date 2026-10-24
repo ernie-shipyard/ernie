@@ -29,7 +29,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from elevenlabs.client import ElevenLabs
 from fastapi.routing import APIRoute
 
-from foldback import live, advise, persona, hum2midi, samples
+from foldback import live, advise, persona, hum2midi, samples, agent
 from mixengine.feedback import build_recommendations
 from mixengine.main import app as mix_analysis_app, registry as mix_registry
 
@@ -659,6 +659,13 @@ def health():
             "ok": True, "has_key": bool(key) and key != "your_key_here", "mock": live.MOCK,
             "llm": bool(os.getenv("LLM_API_KEY"))}
 
+
+app.include_router(agent.router)
+
+# The React/Electron app (ernie-ui), once built with `npm run build`. Same origin as the API, so no CORS.
+_UI_DIST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ernie-ui", "dist")
+if os.path.isdir(_UI_DIST):
+    app.mount("/app", StaticFiles(directory=_UI_DIST, html=True), name="ernie-ui")
 
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
 

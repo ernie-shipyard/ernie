@@ -10,3 +10,6 @@ foldback/.sample_features.json
 plugin/Builds/
 build
 .DS_Store
+.venv*/
+# capture outputs written at the repo root
+/ernie-*.json

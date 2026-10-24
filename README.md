@@ -2,17 +2,32 @@
 
 Local music-production collaborator: Ableton session context, mix analysis, voice, MIDI and sample tools, plus a JUCE plugin that can capture a track into a bounded RAM buffer.
 
-## Run
+## Run Ernie (voice app)
+
+Ernie is a voice agent: talk to it and it listens to your mix through the plugin, generates sounds, finds samples
+and turns hums into MIDI, all from one chat-style window.
 
 ```sh
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env
-uvicorn app:app --reload
+python3.13 -m venv .venv                     # Python 3.10+ (app.py uses `X | None` annotations)
+.venv/bin/pip install -r requirements.txt
+brew install ffmpeg                          # browser audio is webm; hum-to-MIDI decodes it with ffmpeg
+cp .env.example .env                         # set ELEVENLABS_API_KEY (sk_...) and ELEVENLABS_AGENT_ID
+.venv/bin/python scripts/setup_agent.py      # once: gives the Ernie agent its prompt and client tools
+scripts/dev.sh                               # backend :8000 + Vite :5173 + Electron window
 ```
 
-Open `http://127.0.0.1:8000`. OpenAPI docs are at `/docs`. `ELEVENLABS_API_KEY` enables speech/music features; DSP analysis works without it. Optional `LLM_BASE_URL` and `LLM_API_KEY` enable conversational rewrites.
+Put the ERNIE plugin on the master bus. Click **Talk to Ernie**, then for example:
+
+- "Give me some mixing feedback": Ernie says "I'm listening, run the track", arms the plugin; press play. When the capture finishes it reads the measured notes back, or tells you to keep cooking if there's nothing to fix.
+- "Make me a warm pad in A minor at 120": generates an 8 s loop (drums/FX: a one-shot) and posts a player in the chat.
+- "Find me a bass sample": ranks your `SAMPLE_DIRS` library by tempo then key.
+- "Let me hum a bass line": plays a count-in, records, and returns a `.mid` (and a new MIDI track in Live).
+
+The header chips show whether the backend is up, which port the plugin answered on, and the agent connection. You can type to Ernie in the chat box too.
+
+How it fits together: the ElevenLabs Conversational Agent (its built-in LLM, Ernie's prompt and voice) calls **client tools** that run in the React app (`ernie-ui/src/hooks/useErnieTools.js`), which call this backend. The agent never reaches the plugin or Ableton directly, and the API key stays in `.env`: the app gets a short-lived signed URL from `GET /agent/signed-url`. See `docs/ARCHITECTURE.md`.
+
+`cd ernie-ui && npm start` builds the UI and opens Electron against the build served by FastAPI at `/app`. The original button UI is still at `http://127.0.0.1:8000/` and the OpenAPI docs at `/docs`.
 
 ## Mix analysis API
 
@@ -36,6 +51,8 @@ The plugin retains manual `/v1/recording/start` and `/v1/recording/stop` control
 ## Other features
 
 Foldback routes provide Ableton session context, structural/spectral mix notes, speech interaction, hum-to-MIDI, sample matching, and music composition through ElevenLabs. Finished plugin listens are included: `POST /advise` adds their notes to the session notes, `POST /advise/captures` speaks them without Ableton, and `/tools/track_analysis/{label}` reads a plugin capture by track id, name, or role. Set `FOLDBACK_MOCK=1` to use `foldback/session.mock.json` without Ableton. See `docs/ARCHITECTURE.md` for component ownership and route details.
+
+**Stack tab** (legacy page at `/`). Builds a track one layer at a time: Drums, Bass, Pad, Synth/Lead, FX, Vocals. Header shows session tempo and a key, set from the chosen sample's filename. *Pick from library* (`GET /samples/pick?tag=&key=&bpm=`) returns up to 5 indexed samples ranked by tempo then key, with mismatches flagged. *Preview* plays the chosen file. *Generate* calls ElevenLabs Sound Effects for Drums/FX one-shots (`POST /generate/oneshot`) or the Music API for 8 s loops on tonal rows (`POST /compose`, prompt includes key and tempo). *Regenerate by voice* sends your instruction through Scribe (`POST /revise`) and regenerates. *Hum melody* plays the key as a reference tone, runs a metronome, and turns the hum into quantized MIDI on a new Live track named after the row (`POST /midi/hum`). *Play stack* loops all chosen layers together in the browser at the session tempo. Beatbox → drums is in progress.
 
 ## Tests
 

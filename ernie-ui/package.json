@@ -1,4 +1,3 @@
-
 {
   "name": "ernie-ui",
   "private": true,
@@ -11,7 +10,9 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "electron": "electron .",
-    "dev:electron": "concurrently -k \"npm run dev\" \"wait-on http://localhost:5173 && npm run electron\""
+    "dev:electron": "concurrently -k -n api,ui,app \"npm run backend\" \"npm run dev\" \"wait-on http-get://127.0.0.1:8000/health http-get://localhost:5173 && npm run electron\"",
+    "start": "vite build && ERNIE_PROD=1 electron .",
+    "backend": "cd .. && if curl -sf http://127.0.0.1:8000/health >/dev/null; then echo 'backend already running on :8000'; tail -f /dev/null; else exec .venv/bin/uvicorn app:app --reload --port 8000; fi"
   },
   "dependencies": {
     "@elevenlabs/react": "^1.19.1",

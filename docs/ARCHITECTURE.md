@@ -1,19 +1,50 @@
 # Architecture
 
-The root FastAPI service hosts the Foldback product routes and the independent `mixengine` WAV analysis API. Each JUCE plugin instance runs a loopback-only control server. A client selects a plugin instance by the port shown in that instance's editor.
-
 ```text
-Agent / UI
-   │ POST /tracks/{id}/plugin-listen
+Producer (voice / chat)
+   │
+Electron window ── React app (ernie-ui) ── ElevenLabs Conversational Agent "Ernie"
+   │   avatar, chat, tool cards          LLM + voice + prompt (scripts/setup_agent.py)
+   │   client tools ◄──────────────────── tool calls
    ▼
-FastAPI (app.py)
-   │ handshake, arm, poll status, fetch WAV
-   ▼
-JUCE instance on 127.0.0.1:17831–17862
-   │ bounded RAM capture gated by DAW transport
-   ▼
-WAV cache → mixengine DSP → per-capture notes and ranked mix suggestions
+FastAPI (app.py, :8000)
+   ├─ /agent/*   signed URL, plugin discovery, listen → analyze (foldback/agent.py)
+   ├─ mixengine  capture registry, DSP, evidence-based notes
+   ├─ foldback   Ableton session (AbletonOSC), hum→MIDI, samples, ElevenLabs Music / Sound Effects
+   └─ /app       built React UI; / is the original button UI (static/)
+   │
+JUCE plugin on 127.0.0.1:17831–17862 ── bounded RAM capture gated by DAW transport
 ```
+
+## Voice agent
+
+One conversation pipeline: the ElevenLabs agent (`@elevenlabs/react`). The React app registers client tools with
+`useConversationClientTool`; `scripts/setup_agent.py` registers the same names on the agent, plus the system prompt.
+
+| Tool | What the app does |
+|---|---|
+| `start_listening` | `POST /agent/listen`: registers `master` if needed, finds the plugin port, arms it. Returns at once. |
+| `stop_listening` | `POST /agent/listen/{id}/cancel` |
+| `generate_sound` | `POST /generate/oneshot` (drums/fx) or `POST /compose` 8 s loop |
+| `find_samples` | `GET /samples/pick` |
+| `record_hum` | mutes the agent mic, count-in + MediaRecorder, `POST /midi/hum` |
+| `get_session` | `GET /tools/session_context` |
+
+Listening is two-phase because a capture can wait a minute for playback: the app polls `GET /agent/listen/{id}`
+(phase, then measurements + notes + `verdict`: `clean` / `has_notes` / `silent` / `too_short`) and on completion sends
+the agent a hidden `[capture finished] {json}` message, which Ernie turns into spoken feedback. Ernie only quotes
+numbers that came from a tool.
+
+The browser never sees `ELEVENLABS_API_KEY`: `GET /agent/signed-url` mints a conversation URL for
+`ELEVENLABS_AGENT_ID`. `VITE_ELEVENLABS_AGENT_ID` in `ernie-ui/.env.local` is only a fallback for a public agent.
+
+Electron (`ernie-ui/electron/main.cjs`) loads Vite on the fixed port 5173 in dev, or `http://127.0.0.1:8000/app/` when
+packaged / `ERNIE_PROD=1`; it grants microphone permission only and starts uvicorn from `.venv` if nothing answers
+on :8000.
+
+## Mix capture
+
+The root FastAPI service hosts the Foldback product routes and the independent `mixengine` WAV analysis API. Each JUCE plugin instance runs a loopback-only control server. A client selects a plugin instance by the port shown in that instance's editor; `/agent/listen` finds it by probing the unauthenticated `GET /v1/status` across the plugin's port range.
 
 Foldback also provides Ableton session context (`foldback/live.py`), structural and bounce notes (`foldback/advise.py`), speech/LLM phrasing (`foldback/persona.py`), hum-to-MIDI (`foldback/hum2midi.py`), and sample matching (`foldback/samples.py`). ElevenLabs speech/music routes are in `app.py`.
 

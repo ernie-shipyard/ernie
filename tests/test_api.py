@@ -203,8 +203,10 @@ def test_completed_plugin_listen_returns_mixing_notes(client, monkeypatch, tmp_p
     audio = np.full(sample_rate // 2, 0.5, dtype=np.float32)
     payload = wav_bytes(audio, sample_rate)
     statuses = iter([
-        {"recording": True, "capture_ready": False},
-        {"recording": False, "capture_ready": True},
+        {"session_id": "", "recording": False, "capture_ready": False},
+        {"session_id": "kick-take", "recording": True, "capture_ready": False},
+        {"session_id": "kick-take", "recording": False, "capture_ready": True,
+         "samples_written": sample_rate // 2},
     ])
 
     def fake_plugin_request(method, url, token="", payload=None, timeout=2.0):
@@ -216,13 +218,11 @@ def test_completed_plugin_listen_returns_mixing_notes(client, monkeypatch, tmp_p
             return json.dumps(next(statuses)).encode()
         raise AssertionError("unexpected plugin request: {}".format(url))
 
-    def fake_download(url, token, timeout=30.0):
-        path = tmp_path / "kick.wav"
-        path.write_bytes(payload)
-        return str(path)
+    (tmp_path / "capture-kick-take.wav").write_bytes(payload)
 
     monkeypatch.setattr("mixengine.main._plugin_request", fake_plugin_request)
-    monkeypatch.setattr("mixengine.main._download_plugin_wav", fake_download)
+    monkeypatch.setattr("mixengine.main._plugin_capture_path",
+                        lambda session_id: tmp_path / "capture-{}.wav".format(session_id))
     response = client.post(
         "/tracks/kick/plugin-listen",
         json={"plugin_port": 17842, "minimum_context_seconds": 0.1, "max_duration_seconds": 2.0,

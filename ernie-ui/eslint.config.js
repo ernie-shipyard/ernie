@@ -18,4 +18,8 @@ export default defineConfig([
       parserOptions: { ecmaFeatures: { jsx: true } },
     },
   },
+  {
+    files: ['vite.config.js', 'electron/**/*.cjs'],
+    languageOptions: { globals: globals.node },
+  },
 ])
