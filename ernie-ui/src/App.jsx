@@ -128,7 +128,7 @@ function Ernie({ errorMessage, setErrorMessage }) {
           ))}
         </div>
 
-        {tab === "talk" ? (
+        {tab === "talk" && (
           <>
             <h2>
               {isSpeaking
@@ -144,16 +144,17 @@ function Ernie({ errorMessage, setErrorMessage }) {
 
             <p className="hint">Status: {status}</p>
           </>
-        ) : (
-          <div style={{ width: "100%", marginTop: 20 }}>
-            <iframe
-              src="http://127.0.0.1:8000"
-              title="ernie studio"
-              style={{ width: "100%", height: "80vh", border: 0, borderRadius: 12 }}
-              allow="microphone"
-            />
-          </div>
         )}
+
+        {/* Always mounted, only hidden on Talk, so the Stack state and any playing audio survive tab switches */}
+        <div style={{ width: "100%", marginTop: 20, display: tab === "studio" ? "block" : "none" }}>
+          <iframe
+            src="http://127.0.0.1:8000"
+            title="ernie studio"
+            style={{ width: "100%", height: "80vh", border: 0, borderRadius: 12 }}
+            allow="microphone"
+          />
+        </div>
       </main>
 
 
