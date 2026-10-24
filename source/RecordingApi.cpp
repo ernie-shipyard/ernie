@@ -163,7 +163,7 @@ void RecordingApi::serveClient(std::unique_ptr<juce::StreamingSocket> client)
     const auto request = juce::String::fromUTF8(static_cast<const char*>(raw.getData()), received);
     const auto headerEnd = request.indexOf("\r\n\r\n");
     const auto header = headerEnd >= 0 ? request.substring(0, headerEnd) : request;
-    const auto body = headerEnd >= 0 ? request.substring(headerEnd + 4) : juce::String();
+    const auto requestBody = headerEnd >= 0 ? request.substring(headerEnd + 4) : juce::String();
 
     const auto requestLine = header.upToFirstOccurrenceOf("\r\n", false, false);
     const auto method = requestLine.upToFirstOccurrenceOf(" ", false, false);
@@ -182,8 +182,8 @@ void RecordingApi::serveClient(std::unique_ptr<juce::StreamingSocket> client)
     {
         if (!tokenMatches(tokenHeader))
         {
-            const auto body = jsonError("handshake required");
-            const auto response = httpResponse(401, "Unauthorized", body);
+            const auto errorBody = jsonError("handshake required");
+            const auto response = httpResponse(401, "Unauthorized", errorBody);
             client->write(response.toRawUTF8(), static_cast<int>(response.getNumBytesAsUTF8()));
         }
         else
@@ -191,8 +191,8 @@ void RecordingApi::serveClient(std::unique_ptr<juce::StreamingSocket> client)
             const auto file = captureFileProvider != nullptr ? captureFileProvider() : juce::File();
             if (!file.existsAsFile())
             {
-                const auto body = jsonError("no completed capture is available");
-                const auto response = httpResponse(404, "Not Found", body);
+                const auto errorBody = jsonError("no completed capture is available");
+                const auto response = httpResponse(404, "Not Found", errorBody);
                 client->write(response.toRawUTF8(), static_cast<int>(response.getNumBytesAsUTF8()));
             }
             else
@@ -228,7 +228,7 @@ void RecordingApi::serveClient(std::unique_ptr<juce::StreamingSocket> client)
         return;
     }
 
-    const auto responseBody = handleRequest(method, target, body, tokenHeader);
+    const auto responseBody = handleRequest(method, target, requestBody, tokenHeader);
     auto parsed = juce::JSON::parse(responseBody);
     const auto failed = parsed.getDynamicObject() != nullptr
                         && parsed.getDynamicObject()->hasProperty("ok")

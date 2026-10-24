@@ -513,11 +513,13 @@ void ErnieAudioProcessor::writeCaptureWav()
         return;
 
     juce::WavAudioFormat wav;
-    auto* writerRaw = wav.createWriterFor(stream.get(), sampleRate, static_cast<unsigned int>(channels), 24, {}, 0);
-    if (writerRaw == nullptr)
+    auto writer = wav.createWriterFor(
+        stream,
+        juce::AudioFormatWriterOptions{}.withSampleRate(sampleRate)
+            .withNumChannels(channels)
+            .withBitsPerSample(24));
+    if (writer == nullptr)
         return;
-    stream.release(); // the writer owns the output stream from here
-    std::unique_ptr<juce::AudioFormatWriter> writer(writerRaw);
     if (!writer->writeFromAudioSampleBuffer(audio, 0, frames))
         return;
     writer.reset(); // closes and flushes the file before it is published
@@ -638,7 +640,7 @@ juce::Result ErnieAudioProcessor::handleApiCommand(const RecordingCommand& comma
             {
                 {
                     const juce::ScopedLock lock(stateLock);
-                    lastCaptureFile = {};
+                    lastCaptureFile = juce::File();
                 }
             }
             else
