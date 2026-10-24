@@ -10,6 +10,11 @@ foldback/.sample_features.json
 plugin/Builds/
 build
 .DS_Store
+<<<<<<< HEAD
 .venv*/
 # capture outputs written at the repo root
+=======
+demo/generated_stretched/
+.venv*/
+>>>>>>> kristyn/midi-samples
 /ernie-*.json

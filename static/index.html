@@ -37,6 +37,8 @@
   a.dl { color:var(--acc); }
   .layer { border-top:1px solid #222; padding:14px 0; } .layer:first-of-type { border-top:0; }
   .layer h3 { margin:0; font-size:15px; min-width:96px; }
+  .layer .mute { width:16px; height:16px; margin:0; accent-color:var(--acc); }
+  .layer.empty h3, .layer.empty .mute { opacity:.4; }
   .layer button { padding:8px 14px; font-size:14px; }
   .slot { font-size:14px; color:var(--mute); flex:1; min-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .slot b { color:var(--fg); font-weight:500; }
@@ -151,7 +153,15 @@
 <script>
 const $ = id => document.getElementById(id);
 const api = async (url, fd) => { const r = await fetch(url, { method:"POST", body: fd || new FormData() }); const j = await r.json(); if (!r.ok) throw new Error(j.detail || r.statusText); return j; };
-const play = (el, url) => { if (!url) { el.classList.add("hidden"); return; } el.classList.remove("hidden"); el.src = url; el.play().catch(()=>{}); };
+// dl: download filename; when given, a "⬇ download" link to the same URL sits right after the player
+const play = (el, url, dl) => {
+  if (dl !== undefined) {
+    let a = el.nextElementSibling;
+    if (!a?.classList.contains("dlA")) { a = document.createElement("a"); a.className = "dl dlA"; a.textContent = "⬇ download"; el.after(a); }
+    a.classList.toggle("hidden", !url); if (url) { a.href = url; a.download = dl; }
+  }
+  if (!url) { el.classList.add("hidden"); return; } el.classList.remove("hidden"); el.src = url; el.play().catch(()=>{}); };
+const fileSlug = t => String(t).trim().replace(/\s+/g, "");
 const say = (el, t) => { el.classList.remove("hidden"); el.textContent = t; };
 
 // tabs
@@ -216,7 +226,10 @@ const keyPhrase = t => {
 const esc = t => String(t).replace(/[&<>"]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" })[c]);
 const stack = {};   // layer id -> { chosen: {name, url, key?, bpm?, tempo?}, candidates: [], prompt: last generation prompt }
 // "130 bpm" tag; amber when it's far (>3%) from the session tempo
-const bpmTag = x => x.bpm ? ` <span class="bpm ${x.tempo === "far" ? "far" : ""}">${x.tempo === "far" ? "⚠ " : ""}${x.bpm} bpm</span>` : "";
+// download name for a row's chosen audio: library samples keep their own name; generated -> ernie-<row>-<key>-<bpm>.mp3
+const stackFile = (L, c) => c.path ? c.name : ["ernie", L.id, c.key && fileSlug(c.key), c.bpm].filter(Boolean).join("-") + ".mp3";
+// stretched loops (server time-stretches them to the session tempo) show "⇄ 130→124" instead of the amber flag
+const bpmTag = x => x.origBpm ? ` <span class="bpm">⇄ ${x.origBpm}→${x.bpm}</span>` : x.bpm ? ` <span class="bpm ${x.tempo === "far" ? "far" : ""}">${x.tempo === "far" ? "⚠ " : ""}${x.bpm} bpm</span>` : "";
 // key box: choosing a keyed library sample sets it (a typed key is used until the next choice); hums never do.
 // Defaults to the last chosen sample's key, else C.
 const store = { get: k => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
@@ -252,13 +265,14 @@ function renderLayer(L) {
   const st = stack[L.id] ||= { chosen: null, candidates: [] }, el = $("layer-" + L.id), c = st.chosen;
   el.querySelector(".slot").innerHTML = c ? `<b>${esc(c.name)}</b>${c.key ? ` <span class="key">${esc(c.key)}</span>` : ""}${bpmTag(c)}` : "nothing chosen";
   el.querySelector(".prev").disabled = !c;
+  el.classList.toggle("empty", !c);   // greyed until something is chosen
   el.querySelector(".prompt").textContent = st.prompt ? `prompt: ${st.prompt}` : "";
   el.querySelector(".cands").innerHTML = st.candidates.map((x, i) =>
     `<button class="chip${c && c.url === x.url ? " on" : ""}${x.tempo === "far" ? " far" : ""}" data-i="${i}">${esc(x.name)}${x.key ? ` · <span class="key">${esc(x.key)}</span>` : ""}${x.bpm ? " ·" + bpmTag(x) : ""}</button>`).join("");
-  el.querySelectorAll(".cands button").forEach(b => b.onclick = () => { st.chosen = st.candidates[+b.dataset.i]; keyFromSample(L, st.chosen); renderLayer(L); play(el.querySelector("audio"), st.chosen.url); });
+  el.querySelectorAll(".cands button").forEach(b => b.onclick = () => { st.chosen = st.candidates[+b.dataset.i]; keyFromSample(L, st.chosen); renderLayer(L); play(el.querySelector("audio"), st.chosen.url, stackFile(L, st.chosen)); });
 }
 $("stackRows").innerHTML = LAYERS.map(L => `<div class="layer" id="layer-${L.id}">
-  <div class="row"><h3>${L.label}</h3><button class="ghost pick">Pick from library</button><button class="ghost prev">▶ Preview</button><span class="slot"></span></div>
+  <div class="row"><input type="checkbox" class="mute" checked title="include in Play stack"><h3>${L.label}</h3><button class="ghost pick">Pick from library</button><button class="ghost prev">▶ Preview</button><span class="slot"></span></div>
   <div class="row" style="margin-top:8px"><span style="min-width:96px"></span><button class="gen">✦ Generate</button><button class="ghost voice">🎙 Regenerate by voice</button>${L.hum ? `<button class="ghost hum">● Hum melody</button>` : ""}</div>
   <div class="chips cands"></div><div class="fix prompt"></div><div class="humOut"></div><div class="status"></div><audio class="hidden" controls></audio></div>`).join("");
 LAYERS.forEach(L => {
@@ -270,14 +284,19 @@ LAYERS.forEach(L => {
       const r = await fetch(`/samples/pick?tag=${L.tag}&key=${encodeURIComponent($("stKey").value.trim())}&bpm=${+$("stTempo").value || 120}`), j = await r.json();
       if (!r.ok) throw new Error(j.detail || r.statusText);
       const st = stack[L.id];
-      st.candidates = j.candidates.map(x => ({ ...x, url: "/sample/file?path=" + encodeURIComponent(x.path) }));
+      // loops the server can stretch get the stretched URL and count as being at the session tempo
+      const sbpm = +$("stTempo").value || 120;
+      st.candidates = j.candidates.map(x => {
+        const stretch = x.stretch_ratio && Math.abs(x.stretch_ratio - 1) >= 1e-3, url = "/sample/file?path=" + encodeURIComponent(x.path);
+        return stretch ? { ...x, url: `${url}&bpm=${sbpm}`, origBpm: x.bpm, bpm: sbpm, tempo: "exact" } : { ...x, url };
+      });
       st.chosen = st.candidates[0] || st.chosen;
       if (st.candidates[0]) keyFromSample(L, st.chosen);
       status.textContent = st.candidates.length ? `${st.candidates.length} candidates${j.key ? `, in-key (${j.key}) first` : ""}` : "No matches in the library. Try Scan sample library on the Hum → MIDI tab.";
       renderLayer(L);
     } catch (e) { status.textContent = e.message; }
   };
-  el.querySelector(".prev").onclick = () => stack[L.id].chosen && play(el.querySelector("audio"), stack[L.id].chosen.url);
+  el.querySelector(".prev").onclick = () => stack[L.id].chosen && play(el.querySelector("audio"), stack[L.id].chosen.url, stackFile(L, stack[L.id].chosen));
   const generate = async prompt => {
     const st = stack[L.id], btns = el.querySelectorAll(".gen, .voice");
     btns.forEach(b => b.disabled = true);
@@ -287,9 +306,10 @@ LAYERS.forEach(L => {
     try {
       const j = await api(L.gen === "oneshot" ? "/generate/oneshot" : "/compose", fd);
       // generated loops are assumed to be at the session tempo they were prompted with; one-shots have none
-      st.prompt = j.prompt; st.chosen = L.gen === "oneshot" ? { name: "generated one-shot", url: j.url }
-        : { name: "generated 8 s loop", url: j.url, bpm: +$("stTempo").value || 120, tempo: "exact" };
-      status.textContent = j.cached ? "from cache" : ""; renderLayer(L); play(el.querySelector("audio"), j.url);
+      const key = $("stKey").value.trim();   // the key it was generated in (shown in the slot, used in the file name)
+      st.prompt = j.prompt; st.chosen = L.gen === "oneshot" ? { name: "generated one-shot", url: j.url, key }
+        : { name: "generated 8 s loop", url: j.url, key, bpm: +$("stTempo").value || 120, tempo: "exact" };
+      status.textContent = j.cached ? "from cache" : ""; renderLayer(L); play(el.querySelector("audio"), j.url, stackFile(L, st.chosen));
     } catch (e) { status.textContent = e.message; }
     finally { btns.forEach(b => b.disabled = false); }
   };
@@ -339,8 +359,8 @@ showScan(false);
 // ---------- stack playback: every row's chosen audio from one AudioContext start time, cycling the selected
 // number of bars at the session tempo. Each pass starts fresh sources together: a loop plays its whole-bar
 // length (floor(duration / bar) bars) on repeat and is cut at the end of the pass, so nothing drifts.
-// Drums/FX audio without a bpm is a one-shot fired on beat 1 of each bar. A Drums loop at another tempo is
-// stretched (playbackRate); tonal loops play as-is and get flagged.
+// Drums/FX audio without a bpm is a one-shot fired on beat 1 of each bar. No playbackRate anywhere: loops in
+// stretch range arrive already time-stretched by the server; anything else at another tempo plays as-is, flagged.
 const ONESHOT_ROWS = new Set(["drums", "fx"]);
 let playCtx, playing = null;   // { sources: Set, timer, master, rows }
 const decoded = new Map();     // url -> Promise<AudioBuffer>
@@ -362,8 +382,8 @@ $("playStack").onclick = async () => {
   stopStack();
   const ctx = playCtx ||= new AudioContext(); await ctx.resume();
   const bpm = +$("stTempo").value || 120, bar = 4 * 60 / bpm, total = +$("stLoopBars").value, cycle = total * bar;
-  const rows = LAYERS.filter(L => stack[L.id]?.chosen);
-  if (!rows.length) { $("sPlay").textContent = "Nothing chosen yet. Pick or generate something first."; return; }
+  const rows = LAYERS.filter(L => stack[L.id]?.chosen && $("layer-" + L.id).querySelector(".mute").checked);
+  if (!rows.length) { $("sPlay").textContent = "Nothing to play: pick or generate something, and tick its row."; return; }
   $("sPlay").textContent = "Loading…";
   const loaded = await Promise.all(rows.map(L => decode(ctx, stack[L.id].chosen.url).then(buf => ({ L, buf }),
     e => { $("layer-" + L.id).querySelector(".status").textContent = `Couldn't decode for playback: ${e.message}`; return null; })));
@@ -376,8 +396,8 @@ $("playStack").onclick = async () => {
   for (const { L, buf } of loaded.filter(Boolean)) {
     const c = stack[L.id].chosen, st = $("layer-" + L.id).querySelector(".status");
     if (ONESHOT_ROWS.has(L.id) && !c.bpm) { shots.push(buf); st.textContent = "▶ one-shot on beat 1 of each bar"; continue; }
-    const off = c.bpm && Math.abs(c.bpm - bpm) >= 0.5, rate = off && L.id === "drums" ? bpm / c.bpm : 1;
-    st.textContent = !off ? "▶ looping" : rate !== 1 ? `▶ looping, stretched ${c.bpm} → ${bpm} bpm`
+    const off = c.bpm && Math.abs(c.bpm - bpm) >= 0.5, rate = 1;
+    st.textContent = !off ? (c.origBpm ? `▶ looping, stretched ${c.origBpm} → ${bpm} bpm` : "▶ looping")
       : `⚠ tempo mismatch: ${c.bpm} bpm loop at ${bpm} bpm, playing unstretched`;
     // whole bars at the session tempo; 50 ms of slack so an 8 s file at 124 bpm (7.74 s = 4 bars) or one a
     // few ms short from mp3 padding still counts its last bar. Under one bar: loop the whole file.
@@ -404,6 +424,8 @@ $("playStack").onclick = async () => {
   $("stopStack").disabled = false;
 };
 $("stLoopBars").onchange = () => { if (playing) $("playStack").onclick(); };   // restart everything together
+// row checkboxes: toggling while playing restarts the pass with the new set of rows
+LAYERS.forEach(L => $("layer-" + L.id).querySelector(".mute").onchange = () => { if (playing) $("playStack").onclick(); });
 
 // ---------- session
 $("readBtn").onclick = async () => {
@@ -423,19 +445,19 @@ function renderNotes(notes) {
 }
 $("adviseBtn").onclick = async () => {
   $("sA").textContent = "Reading the set, forming opinions…";
-  try { const j = await api("/advise"); say($("sayA"), j.script); play($("audA"), j.audio); renderNotes(j.notes); $("sA").textContent = ""; }
+  try { const j = await api("/advise"); say($("sayA"), j.script); play($("audA"), j.audio, "ernie-mix-notes.mp3"); renderNotes(j.notes); $("sA").textContent = ""; }
   catch (e) { $("sA").textContent = e.message; }
 };
 $("captureBtn").onclick = async () => {
   $("sA").textContent = "Reading finished plugin listens…";
-  try { const j = await api("/advise/captures"); say($("sayA"), j.script); play($("audA"), j.audio); renderNotes(j.notes); $("sA").textContent = j.notes.length ? "" : "No finished plugin captures yet. Record a listen first."; }
+  try { const j = await api("/advise/captures"); say($("sayA"), j.script); play($("audA"), j.audio, "ernie-mix-notes.mp3"); renderNotes(j.notes); $("sA").textContent = j.notes.length ? "" : "No finished plugin captures yet. Record a listen first."; }
   catch (e) { $("sA").textContent = e.message; }
 };
 $("bounceBtn").onclick = async () => {
   const f = $("bounce").files[0]; if (!f) { $("sA").textContent = "Pick an exported bounce first."; return; }
   $("sA").textContent = "Listening to the bounce…";
   const fd = new FormData(); fd.append("audio", f);
-  try { const j = await api("/advise/audio", fd); say($("sayA"), j.script); play($("audA"), j.audio); renderNotes(j.notes); $("sA").textContent = ""; }
+  try { const j = await api("/advise/audio", fd); say($("sayA"), j.script); play($("audA"), j.audio, "ernie-mix-notes.mp3"); renderNotes(j.notes); $("sA").textContent = ""; }
   catch (e) { $("sA").textContent = e.message; }
 };
 
@@ -538,11 +560,11 @@ $("calSave").onclick = async () => {
 showCal();
 
 // ---------- compose (hum → track)
-let currentPrompt = "";
+let currentPrompt = "", humFile = "ernie-hum-track.mp3";   // download name, set from the hum's analysis
 async function composeAndPlay(prompt) {
   currentPrompt = prompt; $("s1").textContent = "Composing with ElevenLabs Music… (~20–40s)";
   const fd = new FormData(); fd.append("prompt", prompt);
-  try { const j = await api("/compose", fd); play($("player"), j.url); $("s1").textContent = ""; }
+  try { const j = await api("/compose", fd); play($("player"), j.url, humFile); $("s1").textContent = ""; }
   catch (e) { $("s1").textContent = e.message; }
 }
 toggleRecord($("humBtn"), "● Start humming", "meter", async blob => {
@@ -550,6 +572,7 @@ toggleRecord($("humBtn"), "● Start humming", "meter", async blob => {
   const fd = new FormData(); fd.append("audio", blob, "hum.webm"); fd.append("genre", $("genre").value);
   try {
     const { analysis, prompt } = await api("/analyze", fd);
+    humFile = `ernie-hum-track-${fileSlug(analysis.key_center)}-${analysis.tempo}.mp3`;
     $("chips").innerHTML = [`${analysis.tempo} bpm`, `key ~${analysis.key_center}`, `${analysis.range_semitones} st range`, analysis.feel].map(t=>`<span class="chip">${t}</span>`).join("");
     $("prompt1").classList.remove("hidden"); $("prompt1").textContent = prompt;
     await composeAndPlay(prompt);
