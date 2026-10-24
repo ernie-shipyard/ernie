@@ -155,6 +155,41 @@ footer {
   border-color: #5a2a2a;
 }
 
+.tabs {
+  display: flex;
+  gap: 8px;
+}
+
+.tabs button {
+  margin-top: 0;
+  padding: 8px 22px;
+  background: transparent;
+  color: var(--primary);
+  box-shadow: inset 0 0 0 1px var(--primary);
+}
+
+.tabs button.active {
+  background: var(--primary);
+  color: #17120e;
+}
+
+.studio {
+  flex: 1;
+  margin-top: 16px;
+}
+
+.studio iframe {
+  width: 100%;
+  height: calc(100vh - 140px);
+  border: 0;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.layout[hidden] {
+  display: none;
+}
+
 .layout {
   flex: 1;
   display: grid;

@@ -516,12 +516,31 @@ def samples_pick(tag: str, key: str = "", bpm: float | None = None, k: int = 5):
     return {"tag": tag, "key": samples.key_name(want), "bpm": bpm, "candidates": samples.pick(idx, tag, key, bpm=bpm, k=k)}
 
 
+STRETCH_DIR = OUT_DIR.rstrip("/") + "_stretched"   # next to OUT_DIR; key = path + session bpm
+
+
 @app.get("/sample/file")
-def sample_file(path: str):
+def sample_file(path: str, bpm: float | None = None):
+    """With bpm: a loop whose filename has a tempo within 0.8–1.25x of it comes back time-stretched to that
+    tempo (pitch unchanged), cached on disk. Anything else is served as-is."""
+    idx = samples.index()
     # only files the index already knows about — this must not become a read-any-file endpoint
-    if not samples.in_index(samples.index(), path) or not os.path.exists(path):
+    if not samples.in_index(idx, path) or not os.path.exists(path):
         raise HTTPException(404)
-    return FileResponse(path)
+    it = samples.item(idx, path)
+    ratio = samples.stretch_ratio(it and it.get("bpm"), bpm)
+    if not ratio or abs(ratio - 1) < 1e-3:
+        return FileResponse(path)
+    os.makedirs(STRETCH_DIR, exist_ok=True)
+    out = os.path.join(STRETCH_DIR, hashlib.sha1(f"{path}|{bpm:g}".encode()).hexdigest()[:16] + ".wav")
+    if not os.path.exists(out):
+        import soundfile as sf
+        y, sr = librosa.load(path, sr=None, mono=False)
+        # librosa's rate is a speed factor (>1 = faster): a 122 bpm loop for 124 must speed up by 124/122,
+        # i.e. 1 / (file_bpm / session_bpm)
+        sf.write(out + ".part.wav", librosa.effects.time_stretch(y, rate=1 / ratio).T, sr)
+        os.replace(out + ".part.wav", out)
+    return FileResponse(out, media_type="audio/wav")
 
 
 # ---------------------------------------------------------------- JUCE plugin ingest (team contract)

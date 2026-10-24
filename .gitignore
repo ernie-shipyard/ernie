@@ -11,5 +11,6 @@ plugin/Builds/
 build
 .DS_Store
 .venv*/
+demo/generated_stretched/
 # capture outputs written at the repo root
 /ernie-*.json

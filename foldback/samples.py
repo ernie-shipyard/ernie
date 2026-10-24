@@ -182,8 +182,23 @@ def pick(idx, want_tag, key_text="", bpm=None, k=5):
         scored.append((TEMPO_TIERS.index(tt), -key_score(sk, want), random.random(), it, sk, sb, tt))
     scored.sort(key=lambda x: x[:3])
     return [{"name": it["name"], "path": it["path"], "tag": it["tag"], "key": key_name(sk), "key_match": ks < 0,
-             "bpm": sb, "tempo": tt}
+             "bpm": sb, "tempo": tt, "stretch_ratio": stretch_ratio(sb, bpm)}
             for _, ks, _, it, sk, sb, tt in scored[:k]]
+
+
+STRETCH_RANGE = (0.8, 1.25)   # file_bpm / session_bpm we'll time-stretch; outside it the artefacts aren't worth it
+
+
+def stretch_ratio(file_bpm, session_bpm):
+    """file_bpm / session_bpm when the file can be stretched to the session, else None."""
+    if not file_bpm or not session_bpm:
+        return None
+    r = file_bpm / session_bpm
+    return round(r, 4) if STRETCH_RANGE[0] <= r <= STRETCH_RANGE[1] else None
+
+
+def item(idx, path):
+    return next((it for it in idx.get("items", []) if it["path"] == path), None)
 
 
 _paths = {}                # index key -> set of paths, for /sample/file's allow-list check

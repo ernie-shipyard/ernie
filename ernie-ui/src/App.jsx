@@ -15,6 +15,9 @@ import { api } from "./services/api.js";
 import "./App.css";
 
 const STATUS_POLL_MS = 5000;
+// The original Foldback web UI (Stack, Hum → MIDI, Mix notes). Same origin as the API in the production build.
+const STUDIO_URL = import.meta.env.DEV ? "http://127.0.0.1:8000/" : "/";
+const TABS = [["talk", "Talk"], ["studio", "Studio"]];
 let nextId = 0;
 const newId = () => ++nextId;
 
@@ -43,6 +46,7 @@ function Ernie({ chat, errorMessage, setErrorMessage }) {
   const { status } = useConversationStatus();
   const { mode } = useConversationMode();
   const backend = useBackendStatus();
+  const [tab, setTab] = useState("talk");
 
   const connected = status === "connected";
   const isSpeaking = connected && mode === "speaking";
@@ -95,6 +99,11 @@ function Ernie({ chat, errorMessage, setErrorMessage }) {
           <h1>ernie.</h1>
           <p>your studio homie</p>
         </div>
+        <nav className="tabs">
+          {TABS.map(([id, label]) => (
+            <button key={id} className={tab === id ? "active" : ""} onClick={() => setTab(id)}>{label}</button>
+          ))}
+        </nav>
         <div className="chips">
           <Chip ok={backend === null ? null : Boolean(backend)}>{backend === false ? "backend offline" : "backend"}</Chip>
           <Chip ok={backend ? plugins.length > 0 : null}>
@@ -104,7 +113,14 @@ function Ernie({ chat, errorMessage, setErrorMessage }) {
         </div>
       </header>
 
-      <main className="layout">
+      {/* Studio keeps the conversation alive: Ernie is still listening and its tools still run. */}
+      {tab === "studio" && (
+        <main className="studio">
+          <iframe src={STUDIO_URL} title="ernie studio" allow="microphone" />
+        </main>
+      )}
+
+      <main className="layout" hidden={tab !== "talk"}>
         <section className="stage">
           <Avatar speaking={isSpeaking} />
           <h2>

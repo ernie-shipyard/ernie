@@ -1,5 +1,67 @@
 # ERNIE / Foldback
 
+## ERNIE at a glance
+
+ernie reads the session (AbletonOSC + JUCE capture), builds with you (Stack: library picks by key/tempo, ElevenLabs Sound Effects + Music generation, hum→MIDI), and critiques (mixengine measurements, rule-based notes spoken via TTS). Talk to it through the ElevenLabs Agent in the React/Electron app (see **Run Ernie** below); the original web UI with Scribe + TTS is the Studio tab.
+
+### Run
+
+**Backend + web UI** (port 8000)
+
+```sh
+python3.13 -m venv .venv && source .venv/bin/activate   # Python 3.10+
+pip install -r requirements.txt
+cp .env.example .env   # ELEVENLABS_API_KEY, SAMPLE_DIRS, OUT_DIR=./demo/generated (demo cache)
+uvicorn app:app --reload --port 8000
+```
+
+**JUCE plugin** — build with CMake (see `plugin/README.md`); its loopback API listens on `127.0.0.1:17831`. Then:
+
+```sh
+curl -X POST http://127.0.0.1:8000/tracks/register -H 'Content-Type: application/json' \
+  -d '{"instance_id":"master","name":"Master","role":"master"}'
+curl -X POST http://127.0.0.1:8000/tracks/master/plugin-listen -H 'Content-Type: application/json' \
+  -d '{"plugin_port":17831,"minimum_context_seconds":2,"max_duration_seconds":15,"playback_start_timeout_seconds":30}'
+curl -X POST http://127.0.0.1:8000/mix/analyze -H 'Content-Type: application/json' \
+  -d '{"capture_ids":["<capture_id from plugin-listen>"]}'
+```
+
+**React/Electron UI** (port 5173, `strictPort`)
+
+```sh
+scripts/dev.sh     # backend + Vite + Electron; see "Run Ernie (voice app)" below
+```
+
+The API key stays in the root `.env`; the UI gets a signed conversation URL from the backend. Never put the ElevenLabs API key in the UI.
+
+### Feature status
+
+| Feature | Verified by | Status |
+|---|---|---|
+| Stack picks / preview | human | working |
+| Hum → MIDI | human | working |
+| Sound Effects + Music generation, cached | real API | working |
+| TTS mix notes | real API | working |
+| Plugin capture + `/mix/analyze` | real capture | working |
+| Ableton session read | mock | mock only |
+| Stack hum-with-metronome, Play stack, Regenerate by voice | machine (synthetic audio, stubs) | machine-tested |
+| Calibration / beatbox | — | in progress |
+| Agent voice + client tools (listen, generate, samples, hum, session) | human (connect, generate); machine (listen flow vs fake plugin) | working |
+| Electron dev window | human | working |
+| Electron packaged `.app` | — | not done (`npm start` runs the production build) |
+
+### ElevenLabs usage
+
+| API | Used by |
+|---|---|
+| TTS | `/advise`, `/advise/captures`, `/ask` |
+| Scribe | `/ask`, `/revise` |
+| Music | `/compose`, `/stack/pregen` |
+| Sound Effects | `/generate/oneshot` |
+| Agents | `ernie-ui` (voice conversation + client tools) |
+
+Handoffs: `docs/HANDOFF-midi-samples-stack.md`, `docs/HANDOFF-backend-juce.md`, `docs/INTEGRATION-HANDOFF.md`.
+
 Local music-production collaborator: Ableton session context, mix analysis, voice, MIDI and sample tools, plus a JUCE plugin that can capture a track into a bounded RAM buffer.
 
 ## Run Ernie (voice app)
@@ -52,7 +114,19 @@ The plugin retains manual `/v1/recording/start` and `/v1/recording/stop` control
 
 Foldback routes provide Ableton session context, structural/spectral mix notes, speech interaction, hum-to-MIDI, sample matching, and music composition through ElevenLabs. Finished plugin listens are included: `POST /advise` adds their notes to the session notes, `POST /advise/captures` speaks them without Ableton, and `/tools/track_analysis/{label}` reads a plugin capture by track id, name, or role. Set `FOLDBACK_MOCK=1` to use `foldback/session.mock.json` without Ableton. See `docs/ARCHITECTURE.md` for component ownership and route details.
 
-**Stack tab** (legacy page at `/`). Builds a track one layer at a time: Drums, Bass, Pad, Synth/Lead, FX, Vocals. Header shows session tempo and a key, set from the chosen sample's filename. *Pick from library* (`GET /samples/pick?tag=&key=&bpm=`) returns up to 5 indexed samples ranked by tempo then key, with mismatches flagged. *Preview* plays the chosen file. *Generate* calls ElevenLabs Sound Effects for Drums/FX one-shots (`POST /generate/oneshot`) or the Music API for 8 s loops on tonal rows (`POST /compose`, prompt includes key and tempo). *Regenerate by voice* sends your instruction through Scribe (`POST /revise`) and regenerates. *Hum melody* plays the key as a reference tone, runs a metronome, and turns the hum into quantized MIDI on a new Live track named after the row (`POST /midi/hum`). *Play stack* loops all chosen layers together in the browser at the session tempo. Beatbox → drums is in progress.
+**Stack tab.** Builds a track one layer at a time: Drums, Bass, Pad, Synth/Lead, FX, Vocals. Header shows session tempo and a key, set from the chosen sample's filename. *Pick from library* (`GET /samples/pick?tag=&key=&bpm=`) returns up to 5 indexed samples ranked by tempo then key, with mismatches flagged. *Preview* plays the chosen file. *Generate* calls ElevenLabs Sound Effects for Drums/FX one-shots (`POST /generate/oneshot`) or the Music API for 8 s loops on tonal rows (`POST /compose`, prompt includes key and tempo). *Regenerate by voice* sends your instruction through Scribe (`POST /revise`) and regenerates. *Hum melody* plays the key as a reference tone, runs a metronome, and turns the hum into quantized MIDI on a new Live track named after the row (`POST /midi/hum`). *Play stack* loops all chosen layers together in the browser at the session tempo. Beatbox → drums is in progress.
+
+### Demo setup
+
+```sh
+git clone <repo> && cd ernie
+brew install ffmpeg
+python3.13 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
+cp .env.example .env   # ELEVENLABS_API_KEY, ELEVENLABS_AGENT_ID, SAMPLE_DIRS=/path/to/samples, OUT_DIR=./demo/generated
+uvicorn app:app --port 8000
+curl -X POST -F force=true http://127.0.0.1:8000/samples/scan           # index the library (seconds)
+curl -X POST -F key=Am -F bpm=124 http://127.0.0.1:8000/stack/pregen    # cache the demo loops
+```
 
 ## Tests
 
