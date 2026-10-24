@@ -10,7 +10,7 @@ class WaveformDisplay : public juce::Component,
                         private juce::Timer
 {
 public:
-    using SampleSource = std::function<int(float* dest, int numFrames)>;
+    using SampleSource = std::function<int(float* const* dest, int destChannels, int numFrames)>;
 
     WaveformDisplay();
     ~WaveformDisplay() override;
@@ -24,6 +24,7 @@ private:
     void timerCallback() override;
 
     SampleSource sampleSource;
-    std::vector<float> samples;
+    std::vector<float> left;
+    std::vector<float> right;
     bool active = false;
 };

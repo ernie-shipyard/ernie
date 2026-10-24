@@ -36,7 +36,8 @@ int main()
     }
 
     const auto inputCopy = input;
-    expect(recorder.start(44100.0, 2, "test-session").wasOk(), "start should arm the ring");
+    expect(recorder.start(44100.0, 1, "test-session").wasOk(), "start should arm a stereo ring even from a mono bus");
+    expect(recorder.getActiveChannels() == 2, "capture is always stereo");
     expect(recorder.setSettings(settings, 44100.0).failed(), "settings must be frozen while recording");
 
     for (int block = 0; block < 100; ++block)

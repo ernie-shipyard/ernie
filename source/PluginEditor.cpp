@@ -61,9 +61,9 @@ ErnieAudioProcessorEditor::ErnieAudioProcessorEditor(ErnieAudioProcessor& proces
     apiLabel.setFont(juce::FontOptions(12.0f));
     addAndMakeVisible(apiLabel);
 
-    waveform.setSampleSource([this](float* dest, int numFrames)
+    waveform.setSampleSource([this](float* const* dest, int destChannels, int numFrames)
     {
-        return processorRef.copyRecentCapture(dest, numFrames);
+        return processorRef.copyRecentCapture(dest, destChannels, numFrames);
     });
     addAndMakeVisible(waveform);
 
@@ -85,7 +85,7 @@ void ErnieAudioProcessorEditor::paint(juce::Graphics& g)
 
     g.setColour(juce::Colours::white);
     g.setFont(juce::FontOptions(18.0f));
-    g.drawFittedText("Ernie", 16, 8, 120, 24, juce::Justification::centredLeft, 1);
+    g.drawFittedText("ernie stereo", 16, 8, 180, 24, juce::Justification::centredLeft, 1);
 }
 
 void ErnieAudioProcessorEditor::resized()

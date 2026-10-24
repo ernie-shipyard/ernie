@@ -58,7 +58,7 @@ public:
     juce::String getApiToken() const { return api.getToken(); }
     juce::String getLastError() const;
 
-    int copyRecentCapture(float* dest, int numFrames) const;
+    int copyRecentCapture(float* const* dest, int destChannels, int numFrames) const;
     juce::File getLastCaptureFile() const;
     void addChangeListener(juce::ChangeListener* listener);
     void removeChangeListener(juce::ChangeListener* listener);

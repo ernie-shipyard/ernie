@@ -30,7 +30,7 @@ juce::Result TrackRecorder::setSettings(const RecorderSettings& next, double hos
         return juce::Result::fail("Unsupported capture sample rate");
     }
 
-    const auto channels = juce::jmax(1, activeChannels.load(std::memory_order_relaxed));
+    const auto channels = maxChannels;
     const auto frames = static_cast<juce::int64>(std::llround(clamped.captureSampleRate * clamped.bufferDurationSeconds));
     if (frames < 1)
         return juce::Result::fail("Buffer duration is too short");
@@ -51,7 +51,10 @@ juce::Result TrackRecorder::start(double hostSampleRate, int numChannels, const 
     if (hostSampleRate <= 0.0)
         return juce::Result::fail("Host sample rate is not available yet");
 
-    numChannels = juce::jlimit(1, maxChannels, numChannels);
+    // Always a stereo pair. A mono host bus is duplicated into the right channel
+    // so the RAM capture is never a single channel.
+    juce::ignoreUnused(numChannels);
+    numChannels = maxChannels;
 
     RecorderSettings active;
     {
@@ -119,17 +122,19 @@ void TrackRecorder::capture(const juce::AudioBuffer<float>& input) noexcept
     if (numInput <= 0)
         return;
 
-    const auto usableChannels = juce::jmin(channels, input.getNumChannels());
+    const auto inputChannels = input.getNumChannels();
     const auto index = writeIndex.load(std::memory_order_relaxed);
     const auto unityRate = std::abs(ratio - 1.0) < 1.0e-6;
     const auto produced = unityRate ? juce::jmin(numInput, frames) : outputFramesFor(numInput);
 
-    if (produced <= 0)
+    if (produced <= 0 || inputChannels <= 0)
         return;
 
-    for (int channel = 0; channel < usableChannels; ++channel)
+    for (int channel = 0; channel < channels; ++channel)
     {
-        const auto* source = input.getReadPointer(channel);
+        // Duplicate the last input channel so a mono bus still fills L/R.
+        const auto sourceChannel = juce::jmin(channel, inputChannels - 1);
+        const auto* source = input.getReadPointer(sourceChannel);
 
         if (!unityRate)
         {

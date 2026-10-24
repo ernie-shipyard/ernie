@@ -437,7 +437,7 @@ juce::Result ErnieAudioProcessor::startRecording()
     if (recorder.isRecording())
         return juce::Result::ok();
 
-    const auto channels = juce::jmax(1, getTotalNumInputChannels());
+    const auto channels = TrackRecorder::maxChannels;
     const auto sessionId = juce::Time::getCurrentTime().formatted("%Y%m%d-%H%M%S")
                            + "-" + juce::Uuid().toDashedString().substring(0, 8);
 
@@ -545,13 +545,9 @@ juce::String ErnieAudioProcessor::getLastError() const
     return lastError;
 }
 
-int ErnieAudioProcessor::copyRecentCapture(float* dest, int numFrames) const
+int ErnieAudioProcessor::copyRecentCapture(float* const* dest, int destChannels, int numFrames) const
 {
-    if (dest == nullptr || numFrames <= 0)
-        return 0;
-
-    float* channels[] = { dest };
-    return recorder.copyRecent(channels, 1, numFrames);
+    return recorder.copyRecent(dest, destChannels, numFrames);
 }
 
 void ErnieAudioProcessor::addChangeListener(juce::ChangeListener* listener)

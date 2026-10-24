@@ -8,7 +8,12 @@ __pycache__/
 foldback/.sample_index.json
 foldback/.sample_features.json
 plugin/Builds/
-build
+build/
+build-stereo/
+cmake-build-*/
+.idea/
+.vscode/
+*.user
 .DS_Store
 .venv*/
 demo/generated_stretched/

@@ -62,6 +62,8 @@ The API key stays in the root `.env`; the UI gets a signed conversation URL from
 
 Handoffs: `docs/HANDOFF-midi-samples-stack.md`, `docs/HANDOFF-backend-juce.md`, `docs/INTEGRATION-HANDOFF.md`.
 
+Recording copies the track into a stereo RAM ring and leaves the live buffer alone. A mono bus is duplicated into the right channel. While it is armed, sample rate and buffer duration cannot change, and the gain parameter is not applied. The ring holds the last N seconds at the chosen capture rate (22.05–192 kHz, or match host). The cap is 256 MB.
+
 Local music-production collaborator: Ableton session context, mix analysis, voice, MIDI and sample tools, plus a JUCE plugin that can capture a track into a bounded RAM buffer.
 
 ## Run Ernie (voice app)

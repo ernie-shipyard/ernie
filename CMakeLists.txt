@@ -42,7 +42,7 @@ endif()
 
 juce_add_plugin(Ernie
     COMPANY_NAME "sialboat"
-    BUNDLE_ID com.sialboat.ernie
+    BUNDLE_ID com.sialboat.erniestereo
     IS_SYNTH FALSE
     NEEDS_MIDI_INPUT FALSE
     NEEDS_MIDI_OUTPUT FALSE
@@ -50,9 +50,9 @@ juce_add_plugin(Ernie
     EDITOR_WANTS_KEYBOARD_FOCUS FALSE
     COPY_PLUGIN_AFTER_BUILD FALSE
     PLUGIN_MANUFACTURER_CODE Slbt
-    PLUGIN_CODE Ern1
+    PLUGIN_CODE Ers1
     FORMATS AU VST3 Standalone
-    PRODUCT_NAME "Ernie"
+    PRODUCT_NAME "ernie stereo"
     NEEDS_WEB_BROWSER FALSE
     NEEDS_CURL FALSE)
 
