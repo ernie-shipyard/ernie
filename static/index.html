@@ -88,7 +88,13 @@
       <button id="humMidiBtn">● Hum a melody</button>
       <button id="beatMidiBtn" class="ghost">● Beatbox a beat</button>
     </div>
+    <div class="row" style="margin-top:12px">
+      <label class="status">BPM <input id="bpm" type="number" min="40" max="240" value="100" style="width:72px"></label>
+      <label class="status"><input id="metro" type="checkbox" checked> Metronome</label>
+      <label class="status">Bars <input id="bars" type="number" min="1" max="8" value="2" style="width:56px"></label>
+    </div>
     <div class="meter"><div id="meterM"></div></div>
+    <div class="row" style="margin-top:12px"><span class="status">Calibrate:</span><button id="calKick" class="ghost">🎙 Hold: kick</button><button id="calSnare" class="ghost">🎙 Hold: snare</button><button id="calHat" class="ghost">🎙 Hold: hat</button><span class="status" id="sCal"></span></div>
     <div class="row" style="margin-top:12px"><button id="scanBtn" class="ghost">Scan sample library</button><span class="status" id="sScan"></span></div>
     <div class="status" id="sM"></div>
     <div class="say hidden" id="sayM"></div>
@@ -125,13 +131,14 @@ document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
 });
 
 // ---------- recording
-async function record({ onLevel, until }) {
+async function record({ onLevel, until, onStart }) {
   const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   const rec = new MediaRecorder(stream, { mimeType: "audio/webm" }); const chunks = [];
   rec.ondataavailable = e => chunks.push(e.data);
   const ctx = new AudioContext(), an = ctx.createAnalyser(); an.fftSize = 512; ctx.createMediaStreamSource(stream).connect(an);
   const buf = new Uint8Array(an.frequencyBinCount); let raf;
   const tick = () => { an.getByteTimeDomainData(buf); let s=0; for (const v of buf) s+=(v-128)**2; onLevel && onLevel(Math.min(1, Math.sqrt(s/buf.length)/40)); raf = requestAnimationFrame(tick); }; tick();
+  rec.onstart = () => onStart && onStart();
   rec.start(); await until(); rec.stop(); await new Promise(r => rec.onstop = r);
   cancelAnimationFrame(raf); ctx.close(); stream.getTracks().forEach(t => t.stop()); onLevel && onLevel(0);
   return new Blob(chunks, { type: "audio/webm" });
@@ -195,9 +202,10 @@ holdRecord($("askBtn"), "🎙 Hold to ask", async blob => {
 });
 
 // ---------- midi
-const midiDone = url => async blob => {
+const midiDone = (url, extra = {}) => async blob => {
   $("sM").textContent = "Transcribing to MIDI…";
   const fd = new FormData(); fd.append("audio", blob, "in.webm");
+  for (const [k, v] of Object.entries(extra)) fd.append(k, v);
   try {
     const j = await api(url, fd); $("sM").textContent = ""; say($("sayM"), j.say);
     $("midiOut").innerHTML = `<div class="chips">${Object.entries(j.info).filter(([k])=>k!=="notes").map(([k,v])=>`<span class="chip">${k}: ${v}</span>`).join("")}</div>
@@ -208,7 +216,57 @@ const midiDone = url => async blob => {
 };
 $("scanBtn").onclick = async () => { $("sScan").textContent = "Scanning…"; try { const j = await api("/samples/scan"); $("sScan").textContent = j.error || `${j.count} samples · ` + Object.entries(j.tags).filter(([,n])=>n).map(([t,n])=>`${n} ${t}`).join(", "); } catch (e) { $("sScan").textContent = e.message; } };
 toggleRecord($("humMidiBtn"), "● Hum a melody", "meterM", midiDone("/midi/hum"));
-toggleRecord($("beatMidiBtn"), "● Beatbox a beat", "meterM", midiDone("/midi/beatbox"));
+// metronome: 1-bar count-in + N bars of click, auto-stop. count_in_s = recording start -> bar 1 downbeat as heard.
+fetch("/session").then(r => r.ok ? r.json() : null).then(j => { const t = j?.inventory?.tempo; if (t) $("bpm").value = Math.round(t); }).catch(() => {});
+let clickCtx;
+function scheduleClicks(ctx, t0, beats, spb) {
+  for (let b = 0; b < beats; b++) {
+    const t = t0 + b * spb, o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.value = b % 4 ? 1000 : 1600;                       // accent each downbeat
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.5, t + 0.002); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.04);
+    o.connect(g).connect(ctx.destination); o.start(t); o.stop(t + 0.05);
+  }
+}
+async function recordWithClick(bpm, bars, onLevel) {
+  const ctx = clickCtx ||= new AudioContext(); await ctx.resume();
+  const spb = 60 / bpm, lead = 0.2; let countIn, started; const go = new Promise(r => started = r);
+  const blob = await record({ onLevel,
+    onStart: () => {
+      scheduleClicks(ctx, ctx.currentTime + lead, 4 * (bars + 1), spb);
+      countIn = lead + 4 * spb + (ctx.outputLatency || 0); started();
+    },
+    until: () => go.then(() => new Promise(r => setTimeout(r, (countIn + 4 * bars * spb + spb / 2) * 1000))) });
+  return { blob, countIn };
+}
+$("beatMidiBtn").onclick = async () => {
+  const btn = $("beatMidiBtn"), label = "● Beatbox a beat", meter = l => $("meterM").style.width = (l*100)+"%";
+  if (btn.dataset.busy) { btn._stop?.(); return; }                 // manual stop (metronome off only)
+  btn.dataset.busy = "1"; btn.classList.add("rec");
+  let blob, extra = {};
+  try {
+    if ($("metro").checked) {
+      const bpm = +$("bpm").value, bars = Math.max(1, +$("bars").value | 0);
+      btn.textContent = `● 1 bar count-in, then ${bars}`;
+      const r = await recordWithClick(bpm, bars, meter); blob = r.blob;
+      extra = { bpm, bars, count_in_s: r.countIn.toFixed(3) };
+    } else {
+      btn.textContent = "■ Stop";
+      blob = await record({ onLevel: meter, until: () => new Promise(r => btn._stop = r) });
+    }
+  } finally { delete btn.dataset.busy; btn._stop = null; btn.classList.remove("rec"); btn.textContent = label; }
+  await midiDone("/midi/beatbox", extra)(blob);
+};
+const cal = {}, calBtns = { kick: "calKick", snare: "calSnare", hat: "calHat" };
+Object.entries(calBtns).forEach(([kind, id]) => holdRecord($(id), `🎙 Hold: ${kind}`, async blob => {
+  cal[kind] = blob; $(id).textContent = `✓ ${kind}`;
+  const left = Object.keys(calBtns).filter(k => !cal[k]);
+  if (left.length) { $("sCal").textContent = `now: ${left.join(", ")}`; return; }
+  $("sCal").textContent = "Calibrating…";
+  const fd = new FormData(); for (const k in cal) fd.append(k, cal[k], `${k}.webm`);
+  try { const j = await api("/calibrate", fd); $("sCal").textContent = ""; say($("sayM"), j.say); }
+  catch (e) { $("sCal").textContent = e.message; }
+  for (const k in calBtns) { delete cal[k]; $(calBtns[k]).textContent = `🎙 Hold: ${k}`; }
+}));
 
 // ---------- compose (hum → track)
 let currentPrompt = "";

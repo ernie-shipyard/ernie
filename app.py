@@ -314,12 +314,16 @@ async def midi_hum(audio: UploadFile = File(...), add_track: bool = Form(True)):
 
 
 @app.post("/midi/beatbox")
-async def midi_beatbox(audio: UploadFile = File(...), add_track: bool = Form(True)):
+async def midi_beatbox(audio: UploadFile = File(...), add_track: bool = Form(True),
+                       bpm: float | None = Form(None), bars: int | None = Form(None), count_in_s: float = Form(0.0)):
+    """bpm (+ bars, count_in_s) come from the metronome recorder; without them the tempo is estimated."""
+    if bpm is not None and not hum2midi.BPM_RANGE[0] <= bpm <= hum2midi.BPM_RANGE[1]:
+        raise HTTPException(400, f"bpm must be between {hum2midi.BPM_RANGE[0]} and {hum2midi.BPM_RANGE[1]}")
     raw = await audio.read()
     mid_id = uuid.uuid4().hex[:10]
     out = os.path.join(OUT_DIR, f"{mid_id}.mid")
     try:
-        info = hum2midi.beatbox_to_midi_file(_to_wav(raw), out)
+        info = hum2midi.beatbox_to_midi_file(_to_wav(raw), out, tempo_bpm=bpm, bars=bars, count_in_s=count_in_s)
     except ValueError as e:
         raise HTTPException(400, str(e))
     track = live.create_midi_track("foldback drums") if add_track else None
@@ -329,6 +333,18 @@ async def midi_beatbox(audio: UploadFile = File(...), add_track: bool = Form(Tru
     return {"midi": f"/midi/{mid_id}", "info": info, "track": track, "samples": matches,
             "say": f"{info['hits']} hits: {info['kick']} kicks, {info['snare']} snares, {info['hat']} hats at {info['tempo']} bpm. "
                    + (f"From your library I'd load {picks}." if picks else "Load a Drum Rack on the new track and drop this in.")}
+
+
+@app.post("/calibrate")
+async def calibrate(kick: UploadFile = File(...), snare: UploadFile = File(...), hat: UploadFile = File(...)):
+    """Three short clips of the performer's own kick / snare / hat -> beatbox prototypes for this server session."""
+    try:
+        protos = {kind: hum2midi.clip_prototype(_to_wav(await f.read()), kind)
+                  for kind, f in [("kick", kick), ("snare", snare), ("hat", hat)]}
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    hum2midi.PROTOTYPES.update(protos)
+    return {"prototypes": protos, "say": "Calibrated. Beatbox again and I'll hear your kick, snare and hat."}
 
 
 # ---------------------------------------------------------------- sample library

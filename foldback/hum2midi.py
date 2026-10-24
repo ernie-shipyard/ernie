@@ -1,23 +1,26 @@
 """Hum / sing -> MIDI melody.  Beatbox -> MIDI drums.  Pure librosa + mido, no API."""
 
+import os
+import json
 import numpy as np
 import librosa
 import mido
 
+from . import samples
+
 SR = 22050
 
-# beatbox hit classification (classify_hit / beatbox_to_midi_file)
-HIT_WIN_S = 0.09            # analysis window after each onset
+# beatbox hit classification (classify_hit / beatbox_to_midi_file / calibrate)
+HIT_WIN_S = 0.09            # feature window after each onset
+PAD_S = 0.05                # silence prepended so a hit at t=0 is caught
 GATE_RATIO = 0.25           # drop onsets whose window peak < this * loudest hit in the take
-MIN_GAP_S = 0.2             # drop an onset within this of a louder one (double triggers)
-LOW_HZ, HIGH_HZ = 180, 2500  # band edges: low < LOW_HZ <= mid < HIGH_HZ <= high
-KICK_LOW = 0.35             # kick if low ratio above this ...
-KICK_CENTROID_HZ = 600      # ... or centroid below this (laptop mics lose the sub)
-HAT_HIGH = 0.55             # hat if high ratio above this ...
-HAT_CENTROID_HZ = 2500      # ... or centroid above this
-TIE_HIGH = (0.4, 0.55)      # ambiguous zone: high ratio in this range and centroid between the two above
-DECAY_REL = 0.3             # decay = time RMS stays above this fraction of its peak
-DECAY_HAT_MAX_S = 0.15      # in the ambiguous zone, shorter decay than this = hat, else snare
+MIN_GAP_S = 0.2             # no-tempo path: drop an onset within this of a louder one (double triggers)
+SLOTS_PER_BAR = 16          # known-tempo path: 16th-note grid in 4/4, loudest onset per slot wins
+BPM_RANGE = (40, 240)       # accepted metronome tempos
+PROTO_PATH = os.path.join(os.path.dirname(__file__), "prototypes.json")
+PROTO_KINDS = ("kick", "snare", "hat")
+
+PROTOTYPES = {k: v for k, v in json.load(open(PROTO_PATH)).items() if k in PROTO_KINDS}  # /calibrate overwrites
 
 
 def load(path):
@@ -101,37 +104,20 @@ def hum_to_midi_file(wav_path, out_path, tempo_bpm=None):
 KICK, SNARE, HAT = 36, 38, 42  # General MIDI, which is also Ableton's default drum rack mapping
 
 
-def classify_hit(y, t, sr=SR, win=HIT_WIN_S):
-    """Band-energy + centroid vote. Beatbox kicks are low thumps (on a laptop mic that means
-    a low centroid, not sub energy), hats are bright hiss, snares are everything in between.
-    Decay length only breaks ties in the ambiguous zone: real snares ring longer than hats."""
-    i = int(t * sr); seg = y[i: i + int(win * sr)]
-    if len(seg) < 256:
-        return HAT
-    S = np.abs(np.fft.rfft(seg * np.hanning(len(seg)))) ** 2
-    freqs = np.fft.rfftfreq(len(seg), 1 / sr)
-    tot = S.sum() + 1e-9
-    low = S[freqs < LOW_HZ].sum() / tot
-    high = S[freqs >= HIGH_HZ].sum() / tot
-    centroid = (S * freqs).sum() / tot
-    if low > KICK_LOW or centroid < KICK_CENTROID_HZ:
-        return KICK
-    if high > HAT_HIGH or centroid > HAT_CENTROID_HZ:
-        return HAT
-    if TIE_HIGH[0] <= high <= TIE_HIGH[1]:
-        r = librosa.feature.rms(y=y[i: i + int(0.5 * sr)], frame_length=512, hop_length=128, center=False)[0]
-        if len(r):
-            p = int(np.argmax(r)); below = np.nonzero(r[p:] < DECAY_REL * r[p])[0]
-            decay = (p + (below[0] if len(below) else len(r) - p)) * 128 / sr
-            if decay < DECAY_HAT_MAX_S:
-                return HAT
-    return SNARE
+PITCH = {"kick": KICK, "snare": SNARE, "hat": HAT}
 
 
-def beatbox_to_midi_file(wav_path, out_path, tempo_bpm=None):
-    y = np.concatenate([np.zeros(int(0.05 * SR)), load(wav_path)])  # pad so a hit at t=0 is caught
+def _detect(wav_path):
+    """Padded audio, raw onset times (in padded-audio seconds), and each onset's window peak."""
+    y = np.concatenate([np.zeros(int(PAD_S * SR)), load(wav_path)])
     onsets = librosa.onset.onset_detect(y=y, sr=SR, units="time", backtrack=True, delta=0.08)
     peaks = np.array([np.max(np.abs(y[int(t * SR): int((t + HIT_WIN_S) * SR)]), initial=0.0) for t in onsets])
+    return y, onsets, peaks
+
+
+def take_hits(wav_path):
+    """Padded audio + onset times that survive the peak gate and the double-trigger debounce."""
+    y, onsets, peaks = _detect(wav_path)
     if len(peaks):
         keep = peaks >= GATE_RATIO * peaks.max()             # drop breath / room-tail ghost onsets
         onsets, peaks = onsets[keep], peaks[keep]
@@ -139,7 +125,59 @@ def beatbox_to_midi_file(wav_path, out_path, tempo_bpm=None):
     for j in np.argsort(-peaks):                             # loudest first, so the louder of a double trigger wins
         if all(abs(onsets[j] - onsets[k]) >= MIN_GAP_S for k in kept):
             kept.append(j)
-    onsets = onsets[sorted(kept)]
+    return y, onsets[sorted(kept)]
+
+
+def grid_hits(wav_path, bpm, bars=None, count_in_s=0.0):
+    """Known tempo: snap onsets to 16th slots counted from the end of the count-in, keep the loudest
+    onset per slot (each slot owns +-1/32 note), drop anything before bar 1 or after the last bar.
+    Returns padded audio, kept onset times (padded-audio seconds, for analysis) and their slot indices."""
+    y, onsets, peaks = _detect(wav_path)
+    slots = np.round((onsets - PAD_S - count_in_s) / (60.0 / bpm / 4)).astype(int)
+    inside = (slots >= 0) & (slots < SLOTS_PER_BAR * bars if bars else True)
+    onsets, peaks, slots = onsets[inside], peaks[inside], slots[inside]
+    if len(peaks):
+        keep = peaks >= GATE_RATIO * peaks.max()
+        onsets, peaks, slots = onsets[keep], peaks[keep], slots[keep]
+    best = {}
+    for t, p, s in zip(onsets, peaks, slots):
+        if s not in best or p > best[s][1]:
+            best[s] = (t, p)
+    order = sorted(best)
+    return y, np.array([best[s][0] for s in order]), np.array(order, dtype=int)
+
+
+def hit_features(y, t, sr=SR, win=HIT_WIN_S):
+    i = int(t * sr)
+    return samples.features(y[i: i + int(win * sr)], sr)
+
+
+def classify_hit(y, t, sr=SR, win=HIT_WIN_S):
+    """Nearest prototype in samples' scaled feature space. Prototypes come from prototypes.json
+    (seed data) until POST /calibrate swaps in the performer's own kick / snare / hat."""
+    f = hit_features(y, t, sr, win)
+    if f is None:
+        return HAT
+    v = samples._vec(f)
+    return PITCH[min(PROTOTYPES, key=lambda k: np.linalg.norm(samples._vec(PROTOTYPES[k]) - v))]
+
+
+def clip_prototype(wav_path, kind):
+    """Mean features over every hit in a calibration clip (one hit or a few)."""
+    y, onsets = take_hits(wav_path)
+    feats = [f for f in (hit_features(y, t) for t in onsets) if f]
+    if not feats:
+        raise ValueError(f"Didn't hear a {kind} — hold the button and hit it a couple of times.")
+    return {k: float(np.mean([f[k] for f in feats])) for k in samples.FEAT_KEYS}
+
+
+def beatbox_to_midi_file(wav_path, out_path, tempo_bpm=None, bars=None, count_in_s=0.0):
+    """tempo_bpm given (metronome take): grid-snap, no tempo estimation, no debounce.
+    count_in_s = seconds from recording start to the downbeat of bar 1."""
+    if tempo_bpm:
+        y, onsets, slots = grid_hits(wav_path, tempo_bpm, bars, count_in_s)
+    else:
+        (y, onsets), slots = take_hits(wav_path), None
     if len(onsets) < 2:
         raise ValueError("Didn't hear hits — try harder consonants: 'b', 'k', 'ts'.")
     if tempo_bpm is None:
@@ -151,11 +189,14 @@ def beatbox_to_midi_file(wav_path, out_path, tempo_bpm=None):
     notes, types = [], []
     for t in onsets:
         pitch = classify_hit(y, t)
-        types.append({KICK: "kick", SNARE: "snare", HAT: "hat"}[pitch])
+        types.append({p: k for k, p in PITCH.items()}[pitch])
         fi = min(int(t * SR / 512), len(rms) - 1)
         vel = int(np.clip(60 + 100 * rms[fi] / (rms.max() + 1e-9), 60, 127))
         notes.append((pitch, t, 0.1, vel))
-    q = quantize(notes, tempo_bpm, grid=0.25)
+    if slots is None:
+        q = quantize(notes, tempo_bpm, grid=0.25)
+    else:
+        q = [(p, int(s) * 0.25, 0.25, v) for (p, _, _, v), s in zip(notes, slots)]   # 16th slot -> beats
     notes_to_midi(q, tempo_bpm, out_path, channel=9)
     counts = {"kick": sum(p == KICK for p, *_ in q), "snare": sum(p == SNARE for p, *_ in q), "hat": sum(p == HAT for p, *_ in q)}
     info = {"tempo": round(tempo_bpm), "hits": len(q), **counts}
