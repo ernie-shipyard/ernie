@@ -314,7 +314,7 @@ async def ask(audio: UploadFile = File(None), text: str = Form("")):
 # ---------------------------------------------------------------- hum / beatbox -> MIDI
 
 @app.post("/midi/hum")
-async def midi_hum(audio: UploadFile = File(...), add_track: bool = Form(True)):
+async def midi_hum(audio: UploadFile = File(...), add_track: bool = Form(True), track_name: str = Form("foldback melody")):
     raw = await audio.read()
     mid_id = uuid.uuid4().hex[:10]
     out = os.path.join(OUT_DIR, f"{mid_id}.mid")
@@ -322,7 +322,7 @@ async def midi_hum(audio: UploadFile = File(...), add_track: bool = Form(True)):
         info = hum2midi.hum_to_midi_file(_to_wav(raw), out)
     except ValueError as e:
         raise HTTPException(400, str(e))
-    track = live.create_midi_track("foldback melody") if add_track else None
+    track = live.create_midi_track(track_name) if add_track else None
     instrument = samples.suggest_for_melody(info.pop("pitches"))
     return {"midi": f"/midi/{mid_id}", "info": info, "track": track, "instrument": instrument,
             "say": f"{info['note_count']} notes at {info['tempo']} bpm, starting around {info['notes'][0] if info['notes'] else '?'}. "

@@ -43,6 +43,8 @@
   button.chip { background:transparent; font-weight:400; cursor:pointer; }
   button.chip.on { border-color:var(--acc); color:var(--fg); }
   .key { color:var(--acc); }
+  .strip { display:flex; gap:4px; flex-wrap:wrap; margin-top:10px; font-family:ui-monospace,monospace; font-size:12px; }
+  .strip span { background:#0a0a0c; border-radius:6px; padding:3px 7px; color:#cfcbbf; }
   input[type=text], input[type=number] { font:inherit; background:#222; color:var(--fg); border:1px solid #333; border-radius:10px; padding:6px 10px; }
 </style>
 </head>
@@ -188,13 +190,13 @@ function holdRecord(btn, label, onDone) {
 }
 
 // ---------- stack: one row per layer; each row has a chosen slot filled from the library
-// gen: "oneshot" -> Sound Effects (/generate/oneshot), "loop" -> Music API (/compose, 8 s)
+// gen: "oneshot" -> Sound Effects (/generate/oneshot), "loop" -> Music API (/compose, 8 s); hum: row gets Hum melody -> MIDI
 const loopPrompt = what => (key, bpm) => `4-bar ${what} loop in ${key} at ${bpm} bpm, no drums`;
 const LAYERS = [
   { id: "drums", label: "Drums", tag: "drums", gen: "oneshot", prompt: key => `punchy 808 kick in ${key}, tight, no reverb` },
-  { id: "bass", label: "Bass", tag: "bass", gen: "loop", prompt: loopPrompt("bass") },
-  { id: "pad", label: "Pad", tag: "pad", gen: "loop", prompt: loopPrompt("warm pad chord") },
-  { id: "synth", label: "Synth/Lead", tag: "synth", gen: "loop", prompt: loopPrompt("synth lead melody") },
+  { id: "bass", label: "Bass", tag: "bass", gen: "loop", hum: true, prompt: loopPrompt("bass") },
+  { id: "pad", label: "Pad", tag: "pad", gen: "loop", hum: true, prompt: loopPrompt("warm pad chord") },
+  { id: "synth", label: "Synth/Lead", tag: "synth", gen: "loop", hum: true, prompt: loopPrompt("synth lead melody") },
   { id: "fx", label: "FX", tag: "fx", gen: "oneshot", prompt: key => `short riser into an impact in ${key}, clean, no music` },
   { id: "vocals", label: "Vocals", tag: "vocal", gen: "loop", prompt: loopPrompt("vocal chop") },
 ];
@@ -229,8 +231,8 @@ function renderLayer(L) {
 }
 $("stackRows").innerHTML = LAYERS.map(L => `<div class="layer" id="layer-${L.id}">
   <div class="row"><h3>${L.label}</h3><button class="ghost pick">Pick from library</button><button class="ghost prev">▶ Preview</button><span class="slot"></span></div>
-  <div class="row" style="margin-top:8px"><span style="min-width:96px"></span><button class="gen">✦ Generate</button><button class="ghost voice">🎙 Regenerate by voice</button></div>
-  <div class="chips cands"></div><div class="fix prompt"></div><div class="status"></div><audio class="hidden" controls></audio></div>`).join("");
+  <div class="row" style="margin-top:8px"><span style="min-width:96px"></span><button class="gen">✦ Generate</button><button class="ghost voice">🎙 Regenerate by voice</button>${L.hum ? `<button class="ghost hum">● Hum melody</button>` : ""}</div>
+  <div class="chips cands"></div><div class="fix prompt"></div><div class="humOut"></div><div class="status"></div><audio class="hidden" controls></audio></div>`).join("");
 LAYERS.forEach(L => {
   const el = $("layer-" + L.id), status = el.querySelector(".status");
   renderLayer(L);
@@ -268,6 +270,16 @@ LAYERS.forEach(L => {
     fd.append("prompt", st.prompt || L.prompt(keyPhrase($("stKey").value), +$("stTempo").value || 120));
     try { const j = await api("/revise", fd); await generate(j.prompt); status.textContent ||= `Heard: “${j.heard}”`; }
     catch (e) { status.textContent = e.message; }
+  });
+  if (L.hum) toggleRecord(el.querySelector(".hum"), "● Hum melody", null, async blob => {
+    status.textContent = "Transcribing to MIDI…";
+    const fd = new FormData(); fd.append("audio", blob, "hum.webm"); fd.append("track_name", L.label);
+    try {
+      const j = await api("/midi/hum", fd), more = j.info.note_count - j.info.notes.length;
+      el.querySelector(".humOut").innerHTML = `<div class="strip">${j.info.notes.map(n => `<span>${esc(n)}</span>`).join("")}${more > 0 ? `<span>+${more} more</span>` : ""}</div>
+        <p class="fix"><a class="dl" href="${j.midi}" download>⬇ download .mid</a> · ${j.info.note_count} notes at ${j.info.tempo} bpm${j.track ? ` · new track in Live: <b>${esc(L.label)}</b>` : ""}</p>`;
+      status.textContent = "";
+    } catch (e) { status.textContent = e.message; }
   });
 });
 
