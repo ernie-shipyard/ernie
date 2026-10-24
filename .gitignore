@@ -10,3 +10,4 @@ foldback/.sample_features.json
 plugin/Builds/
 build
 .DS_Store
+demo/generated_stretched/
