@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
-from app.models import Measurements
+from mixengine.models import Measurements
 
 
 STALE_AFTER_SECONDS = 10.0

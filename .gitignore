@@ -1,2 +1,11 @@
 # Local secrets written by `elevenlabs onboard`
 /.env.local
+.env
+__pycache__/
+*.pyc
+.venv/
+*.mp3
+foldback/.sample_index.json
+plugin/Builds/
+build
+.DS_Store

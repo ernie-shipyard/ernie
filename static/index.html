@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>foldback</title>
+<style>
+  :root { --bg:#0e0e11; --fg:#f2f0ea; --mute:#8d8a80; --acc:#ffb347; --card:#17171c; --hi:#e5484d; --med:#ffb347; --low:#5fa8ff; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.5 ui-sans-serif, system-ui, sans-serif; }
+  main { max-width:720px; margin:0 auto; padding:40px 20px 80px; }
+  h1 { font-size:56px; margin:0; letter-spacing:-0.03em; }
+  .sub { color:var(--mute); margin:0 0 28px; }
+  nav { display:flex; gap:6px; margin-bottom:24px; flex-wrap:wrap; }
+  nav button { background:transparent; color:var(--mute); border:1px solid #26262c; }
+  nav button.on { background:var(--fg); color:#000; border-color:var(--fg); }
+  .card { background:var(--card); border-radius:16px; padding:24px; margin-bottom:20px; }
+  .card h2 { font-size:14px; text-transform:uppercase; letter-spacing:0.08em; color:var(--mute); margin:0 0 14px; }
+  button { font:inherit; border:0; border-radius:999px; padding:12px 22px; cursor:pointer; background:var(--acc); color:#000; font-weight:600; }
+  button.rec { background:var(--hi); color:#fff; }
+  button.ghost { background:transparent; color:var(--fg); border:1px solid #333; }
+  button:disabled { opacity:.4; cursor:default; }
+  .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  select, input[type=file] { font:inherit; background:#222; color:var(--fg); border:1px solid #333; border-radius:10px; padding:10px 12px; }
+  .mono { font-family:ui-monospace,monospace; font-size:13px; color:#cfcbbf; background:#0a0a0c; border-radius:10px; padding:14px; white-space:pre-wrap; margin-top:14px; }
+  .status { color:var(--mute); font-size:14px; min-height:20px; margin-top:12px; }
+  .say { font-size:18px; line-height:1.5; margin-top:14px; border-left:3px solid var(--acc); padding-left:14px; font-style:italic; }
+  audio { width:100%; margin-top:14px; }
+  .meter { height:6px; background:#222; border-radius:3px; overflow:hidden; margin-top:12px; } .meter>div { height:100%; width:0; background:var(--acc); }
+  .hidden { display:none; }
+  .chips { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
+  .chip { font-size:12px; color:var(--mute); border:1px solid #2a2a30; border-radius:999px; padding:4px 10px; }
+  .note { padding:10px 0; border-top:1px solid #222; } .note:first-child { border-top:0; }
+  .note b { font-size:11px; text-transform:uppercase; letter-spacing:.08em; margin-right:8px; }
+  .high b { color:var(--hi);} .med b{ color:var(--med);} .low b{ color:var(--low);}
+  .fix { color:var(--mute); font-size:14px; }
+  a.dl { color:var(--acc); }
+</style>
+</head>
+<body>
+<main>
+  <h1>foldback</h1>
+  <p class="sub">The studio assistant that lives next to your DAW and has opinions.</p>
+  <nav>
+    <button data-tab="session" class="on">Session</button>
+    <button data-tab="advise">Mix notes</button>
+    <button data-tab="ask">Talk to it</button>
+    <button data-tab="midi">Hum → MIDI</button>
+    <button data-tab="compose">Hum → Track</button>
+  </nav>
+
+  <!-- SESSION -->
+  <section class="card tab" id="tab-session">
+    <h2>What it sees</h2>
+    <div class="row"><button id="readBtn">Read my Ableton set</button><span class="status" id="sS"></span></div>
+    <div class="chips" id="invChips"></div>
+    <div class="mono hidden" id="invJson"></div>
+  </section>
+
+  <!-- ADVISE -->
+  <section class="card tab hidden" id="tab-advise">
+    <h2>Mix notes</h2>
+    <div class="row">
+      <button id="adviseBtn">Advise my session</button>
+      <input type="file" id="bounce" accept="audio/*">
+      <button id="bounceBtn" class="ghost">Advise this bounce</button>
+    </div>
+    <div class="status" id="sA"></div>
+    <div class="say hidden" id="sayA"></div>
+    <audio id="audA" class="hidden" controls></audio>
+    <div id="notes"></div>
+  </section>
+
+  <!-- ASK -->
+  <section class="card tab hidden" id="tab-ask">
+    <h2>Talk to it</h2>
+    <p style="color:var(--mute);margin:0 0 12px">“What plugins am I using?” · “Which samples are in here?” · “What's the tempo?” · “Is the bass okay?”</p>
+    <div class="row"><button id="askBtn" class="ghost">🎙 Hold to ask</button></div>
+    <div class="status" id="sQ"></div>
+    <div class="say hidden" id="sayQ"></div>
+    <audio id="audQ" class="hidden" controls></audio>
+  </section>
+
+  <!-- MIDI -->
+  <section class="card tab hidden" id="tab-midi">
+    <h2>Hum or beatbox → MIDI (lands as a new track in Live)</h2>
+    <div class="row">
+      <button id="humMidiBtn">● Hum a melody</button>
+      <button id="beatMidiBtn" class="ghost">● Beatbox a beat</button>
+    </div>
+    <div class="meter"><div id="meterM"></div></div>
+    <div class="row" style="margin-top:12px"><button id="scanBtn" class="ghost">Scan sample library</button><span class="status" id="sScan"></span></div>
+    <div class="status" id="sM"></div>
+    <div class="say hidden" id="sayM"></div>
+    <div id="midiOut"></div>
+  </section>
+
+  <!-- COMPOSE (original hum → full track) -->
+  <section class="card tab hidden" id="tab-compose">
+    <h2>Hum → full track (ElevenLabs Music), then revise by voice</h2>
+    <div class="row">
+      <button id="humBtn">● Start humming</button>
+      <select id="genre"><option>lo-fi hip hop</option><option>indie folk</option><option>synthwave</option><option>jazz trio</option><option>cinematic orchestral</option><option>house</option><option>bossa nova</option></select>
+    </div>
+    <div class="meter"><div id="meter"></div></div>
+    <div class="status" id="s1"></div>
+    <div class="chips" id="chips"></div>
+    <div class="mono hidden" id="prompt1"></div>
+    <audio id="player" class="hidden" controls></audio>
+    <div class="row" style="margin-top:14px"><button id="revBtn" class="ghost">🎙 Hold to revise</button><button id="regenBtn" class="ghost">↻ Regenerate</button></div>
+    <div class="status" id="s3"></div>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const api = async (url, fd) => { const r = await fetch(url, { method:"POST", body: fd || new FormData() }); const j = await r.json(); if (!r.ok) throw new Error(j.detail || r.statusText); return j; };
+const play = (el, url) => { if (!url) { el.classList.add("hidden"); return; } el.classList.remove("hidden"); el.src = url; el.play().catch(()=>{}); };
+const say = (el, t) => { el.classList.remove("hidden"); el.textContent = t; };
+
+// tabs
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
+  document.querySelectorAll("nav button").forEach(x => x.classList.remove("on")); b.classList.add("on");
+  document.querySelectorAll(".tab").forEach(t => t.classList.add("hidden")); $("tab-"+b.dataset.tab).classList.remove("hidden");
+});
+
+// ---------- recording
+async function record({ onLevel, until }) {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  const rec = new MediaRecorder(stream, { mimeType: "audio/webm" }); const chunks = [];
+  rec.ondataavailable = e => chunks.push(e.data);
+  const ctx = new AudioContext(), an = ctx.createAnalyser(); an.fftSize = 512; ctx.createMediaStreamSource(stream).connect(an);
+  const buf = new Uint8Array(an.frequencyBinCount); let raf;
+  const tick = () => { an.getByteTimeDomainData(buf); let s=0; for (const v of buf) s+=(v-128)**2; onLevel && onLevel(Math.min(1, Math.sqrt(s/buf.length)/40)); raf = requestAnimationFrame(tick); }; tick();
+  rec.start(); await until(); rec.stop(); await new Promise(r => rec.onstop = r);
+  cancelAnimationFrame(raf); ctx.close(); stream.getTracks().forEach(t => t.stop()); onLevel && onLevel(0);
+  return new Blob(chunks, { type: "audio/webm" });
+}
+const holdOn = btn => () => new Promise(res => { const d = () => { ["mouseup","mouseleave","touchend"].forEach(e => btn.removeEventListener(e, d)); res(); }; ["mouseup","mouseleave","touchend"].forEach(e => btn.addEventListener(e, d)); });
+function toggleRecord(btn, label, meterId, onDone) {
+  let busy = false;
+  btn.onclick = async () => {
+    if (busy) return; busy = true;
+    const stopP = new Promise(r => { btn.onclick = () => r(); });
+    btn.textContent = "■ Stop"; btn.classList.add("rec");
+    const blob = await record({ onLevel: l => { if (meterId) $(meterId).style.width = (l*100)+"%"; }, until: () => stopP });
+    btn.textContent = label; btn.classList.remove("rec"); busy = false;
+    toggleRecord(btn, label, meterId, onDone);
+    await onDone(blob);
+  };
+}
+function holdRecord(btn, label, onDone) {
+  btn.onmousedown = btn.ontouchstart = async e => {
+    e.preventDefault(); btn.classList.add("rec"); btn.textContent = "🎙 Listening… release";
+    const blob = await record({ until: holdOn(btn) });
+    btn.classList.remove("rec"); btn.textContent = label; await onDone(blob);
+  };
+}
+
+// ---------- session
+$("readBtn").onclick = async () => {
+  $("sS").textContent = "Reading…";
+  try {
+    const r = await fetch("/session"); const j = await r.json(); if (!r.ok) throw new Error(j.detail);
+    const inv = j.inventory;
+    $("invChips").innerHTML = [inv.daw, `${inv.tempo} bpm`, `${inv.track_count} tracks`, ...Object.keys(inv.devices).map(d=>d), ...inv.samples].map(t=>`<span class="chip">${t}</span>`).join("");
+    $("invJson").classList.remove("hidden"); $("invJson").textContent = JSON.stringify(j.session, null, 1);
+    $("sS").textContent = "";
+  } catch (e) { $("sS").textContent = e.message; }
+};
+
+// ---------- advise
+function renderNotes(notes) {
+  $("notes").innerHTML = notes.map(n => `<div class="note ${n.severity}"><b>${n.severity}</b>${n.track ? `<span class="chip">${n.track}</span> ` : ""}${n.msg}<div class="fix">→ ${n.fix}</div></div>`).join("") || "<div class='status'>No notes. Suspicious.</div>";
+}
+$("adviseBtn").onclick = async () => {
+  $("sA").textContent = "Reading the set, forming opinions…";
+  try { const j = await api("/advise"); say($("sayA"), j.script); play($("audA"), j.audio); renderNotes(j.notes); $("sA").textContent = ""; }
+  catch (e) { $("sA").textContent = e.message; }
+};
+$("bounceBtn").onclick = async () => {
+  const f = $("bounce").files[0]; if (!f) { $("sA").textContent = "Pick an exported bounce first."; return; }
+  $("sA").textContent = "Listening to the bounce…";
+  const fd = new FormData(); fd.append("audio", f);
+  try { const j = await api("/advise/audio", fd); say($("sayA"), j.script); play($("audA"), j.audio); renderNotes(j.notes); $("sA").textContent = ""; }
+  catch (e) { $("sA").textContent = e.message; }
+};
+
+// ---------- ask
+holdRecord($("askBtn"), "🎙 Hold to ask", async blob => {
+  $("sQ").textContent = "Transcribing…";
+  const fd = new FormData(); fd.append("audio", blob, "q.webm");
+  try { const j = await api("/ask", fd); $("sQ").textContent = `You: “${j.heard}”`; say($("sayQ"), j.reply); play($("audQ"), j.audio); }
+  catch (e) { $("sQ").textContent = e.message; }
+});
+
+// ---------- midi
+const midiDone = url => async blob => {
+  $("sM").textContent = "Transcribing to MIDI…";
+  const fd = new FormData(); fd.append("audio", blob, "in.webm");
+  try {
+    const j = await api(url, fd); $("sM").textContent = ""; say($("sayM"), j.say);
+    $("midiOut").innerHTML = `<div class="chips">${Object.entries(j.info).filter(([k])=>k!=="notes").map(([k,v])=>`<span class="chip">${k}: ${v}</span>`).join("")}</div>
+      <p><a class="dl" href="${j.midi}" download>⬇ download .mid</a> ${j.track ? `· new track in Live: <b>${j.track.track ?? "#"+(j.track.track_index+1)}</b>` : ""}</p>
+      ${j.instrument ? `<div class="fix">Instrument: ${j.instrument}</div>` : ""}
+      ${j.samples && Object.keys(j.samples).length ? `<div class="chips">${Object.entries(j.samples).map(([k,v]) => v.map(x=>`<span class="chip">${k}: ${x.name}</span>`).join("")).join("")}</div>` : ""}`;
+  } catch (e) { $("sM").textContent = e.message; }
+};
+$("scanBtn").onclick = async () => { $("sScan").textContent = "Scanning…"; try { const j = await api("/samples/scan"); $("sScan").textContent = j.error || `${j.count} samples · ` + Object.entries(j.tags).filter(([,n])=>n).map(([t,n])=>`${n} ${t}`).join(", "); } catch (e) { $("sScan").textContent = e.message; } };
+toggleRecord($("humMidiBtn"), "● Hum a melody", "meterM", midiDone("/midi/hum"));
+toggleRecord($("beatMidiBtn"), "● Beatbox a beat", "meterM", midiDone("/midi/beatbox"));
+
+// ---------- compose (hum → track)
+let currentPrompt = "";
+async function composeAndPlay(prompt) {
+  currentPrompt = prompt; $("s1").textContent = "Composing with ElevenLabs Music… (~20–40s)";
+  const fd = new FormData(); fd.append("prompt", prompt);
+  try { const j = await api("/compose", fd); play($("player"), j.url); $("s1").textContent = ""; }
+  catch (e) { $("s1").textContent = e.message; }
+}
+toggleRecord($("humBtn"), "● Start humming", "meter", async blob => {
+  $("s1").textContent = "Listening…";
+  const fd = new FormData(); fd.append("audio", blob, "hum.webm"); fd.append("genre", $("genre").value);
+  try {
+    const { analysis, prompt } = await api("/analyze", fd);
+    $("chips").innerHTML = [`${analysis.tempo} bpm`, `key ~${analysis.key_center}`, `${analysis.range_semitones} st range`, analysis.feel].map(t=>`<span class="chip">${t}</span>`).join("");
+    $("prompt1").classList.remove("hidden"); $("prompt1").textContent = prompt;
+    await composeAndPlay(prompt);
+  } catch (e) { $("s1").textContent = e.message; }
+});
+holdRecord($("revBtn"), "🎙 Hold to revise", async blob => {
+  $("s3").textContent = "Transcribing…";
+  const fd = new FormData(); fd.append("audio", blob, "say.webm"); fd.append("prompt", currentPrompt);
+  try { const j = await api("/revise", fd); $("s3").textContent = `Heard: “${j.heard}”`; $("prompt1").textContent = j.prompt; await composeAndPlay(j.prompt); }
+  catch (e) { $("s3").textContent = e.message; }
+});
+$("regenBtn").onclick = () => currentPrompt && composeAndPlay(currentPrompt);
+</script>
+</body>
+</html>

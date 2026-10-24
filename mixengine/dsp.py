@@ -7,7 +7,7 @@ import numpy as np
 import soundfile as sf
 from scipy.signal import welch
 
-from app.models import BandEnergy, Measurements
+from mixengine.models import BandEnergy, Measurements
 
 
 class AudioDecodeError(ValueError):

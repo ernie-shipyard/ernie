@@ -6,7 +6,7 @@ import pytest
 import soundfile as sf
 from fastapi.testclient import TestClient
 
-from app.main import app, captures, registry
+from mixengine.main import app, captures, registry
 
 
 @pytest.fixture
@@ -157,7 +157,7 @@ def test_stale_tracks_are_listed_but_excluded_from_mix(client, monkeypatch):
     time = np.arange(1024) / sample_rate
     upload(client, "track-a", 0.2 * np.sin(2 * np.pi * 440 * time), sample_rate)
     track = registry.get("track-a")
-    monkeypatch.setattr("app.registry.time.monotonic", lambda: track.last_seen_monotonic + 11)
+    monkeypatch.setattr("mixengine.registry.time.monotonic", lambda: track.last_seen_monotonic + 11)
     listed = client.get("/tracks").json()["tracks"][0]
     assert listed["is_stale"] is True
     assert listed["latest_measurements"] is not None
@@ -174,7 +174,7 @@ def test_agent_can_analyze_an_explicit_older_capture_without_calling_it_current(
     capture_id = registry.get("track-a").latest_capture_id
     track = registry.get("track-a")
     captures.get(capture_id).completed_at = datetime.now(timezone.utc) - timedelta(seconds=11)
-    monkeypatch.setattr("app.registry.time.monotonic", lambda: track.last_seen_monotonic + 11)
+    monkeypatch.setattr("mixengine.registry.time.monotonic", lambda: track.last_seen_monotonic + 11)
     result = client.post("/mix/analyze", json={"capture_ids": [capture_id]}).json()
     assert result["tracks"][0]["capture_id"] == capture_id
     assert result["tracks"][0]["snapshot_is_stale"] is True

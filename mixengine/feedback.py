@@ -3,8 +3,8 @@
 from statistics import median
 from typing import Dict, List, Tuple
 
-from app.models import Recommendation
-from app.registry import TrackState
+from mixengine.models import Recommendation
+from mixengine.registry import TrackState
 
 
 def _new_recommendation(

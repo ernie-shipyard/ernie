@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Dict, Optional
 
-from app.models import Measurements
+from mixengine.models import Measurements
 
 
 ACTIVE_CAPTURE_STATES = {"requested", "waiting_for_playback", "recording", "processing"}

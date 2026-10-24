@@ -11,10 +11,10 @@ import soundfile as sf
 from fastapi import FastAPI, Header, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.captures import CaptureRegistry, CaptureState
-from app.dsp import AudioDecodeError, analyze_wav_file
-from app.feedback import build_recommendations
-from app.models import (
+from mixengine.captures import CaptureRegistry, CaptureState
+from mixengine.dsp import AudioDecodeError, analyze_wav_file
+from mixengine.feedback import build_recommendations
+from mixengine.models import (
     CaptureCommand,
     CaptureProgressRequest,
     CaptureResponse,
@@ -29,7 +29,7 @@ from app.models import (
     TrackRegistrationResponse,
     TrackView,
 )
-from app.registry import STALE_AFTER_SECONDS, TrackRegistry, TrackState
+from mixengine.registry import STALE_AFTER_SECONDS, TrackRegistry, TrackState
 
 
 MAX_AUDIO_BYTES = 512 * 1024 * 1024
