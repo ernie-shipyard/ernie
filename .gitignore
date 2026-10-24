@@ -11,3 +11,5 @@ plugin/Builds/
 build
 .DS_Store
 demo/generated_stretched/
+.venv*/
+/ernie-*.json
