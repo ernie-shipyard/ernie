@@ -48,7 +48,7 @@ app.add_middleware(
 )
 eleven = ElevenLabs(api_key=os.getenv("ELEVENLABS_API_KEY"))
 
-OUT_DIR = os.path.join(tempfile.gettempdir(), "foldback_out")
+OUT_DIR = os.path.expanduser(os.getenv("OUT_DIR", "~/Music/ernie"))
 os.makedirs(OUT_DIR, exist_ok=True)
 
 DEFAULT_LENGTH_MS = int(os.getenv("TRACK_LENGTH_MS", "15000"))
