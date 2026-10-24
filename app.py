@@ -401,6 +401,14 @@ async def ask(audio: UploadFile = File(None), text: str = Form("")):
 
 # ---------------------------------------------------------------- hum / beatbox -> MIDI
 
+def _live_track(name: str):
+    """A new MIDI track in Live is a bonus: without AbletonOSC the .mid is still the result, not a 500."""
+    try:
+        return live.create_midi_track(name)
+    except Exception as e:
+        return {"error": f"Couldn't add a track in Live ({e}). Drag the .mid in by hand."}
+
+
 @app.post("/midi/hum")
 async def midi_hum(audio: UploadFile = File(...), add_track: bool = Form(True), track_name: str = Form("foldback melody"),
                    bpm: float | None = Form(None), bars: int | None = Form(None), count_in_s: float = Form(0.0)):
@@ -412,7 +420,7 @@ async def midi_hum(audio: UploadFile = File(...), add_track: bool = Form(True), 
         info = hum2midi.hum_to_midi_file(_to_wav(raw), out, tempo_bpm=bpm, bars=bars, count_in_s=count_in_s)
     except ValueError as e:
         raise HTTPException(400, str(e))
-    track = live.create_midi_track(track_name) if add_track else None
+    track = _live_track(track_name) if add_track else None
     pitches = info.pop("pitches")
     instrument = samples.suggest_for_melody(pitches)
     # most-sung pitch class, as analyze_hum does — informational; the Stack key box doesn't take it
@@ -447,7 +455,7 @@ async def midi_beatbox(audio: UploadFile = File(...), add_track: bool = Form(Tru
         _log_take("/midi/beatbox", bpm, bars, count_in_s, raw, wav, "<2")
         raise HTTPException(400, str(e))
     _log_take("/midi/beatbox", bpm, bars, count_in_s, raw, wav, info["hits"])
-    track = live.create_midi_track("foldback drums") if add_track else None
+    track = _live_track("foldback drums") if add_track else None
     onsets, types, y = info.pop("_onsets"), info.pop("_types"), info.pop("_y")
     matches = samples.match_hits(y, onsets, types, samples.index()) if os.getenv("SAMPLE_DIRS") else {}
     picks = ", ".join(f"{k}: {v[0]['name']}" for k, v in matches.items() if v)
