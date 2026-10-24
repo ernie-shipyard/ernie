@@ -71,7 +71,8 @@
       <span class="status" id="stKeyNote"></span>
       <span class="status" id="stScan" style="margin-left:auto"></span><button id="stRescan" class="ghost" style="padding:6px 12px;font-size:13px">⟳ Rescan</button>
     </div>
-    <div class="row" style="margin-top:12px"><button id="playStack">▶ Play stack</button><button id="stopStack" class="ghost" disabled>■ Stop</button><span class="status" id="sPlay"></span></div>
+    <div class="row" style="margin-top:12px"><button id="playStack">▶ Play stack</button><button id="stopStack" class="ghost" disabled>■ Stop</button>
+      <label class="status">Loop <select id="stLoopBars"><option>2</option><option>4</option><option selected>8</option><option>16</option></select> bars</label><span class="status" id="sPlay"></span></div>
     <div id="stackRows" style="margin-top:8px"></div>
   </section>
 
@@ -335,9 +336,11 @@ async function showScan(force) {
 $("stRescan").onclick = () => showScan(true);
 showScan(false);
 
-// ---------- stack playback: every row's chosen audio from one AudioContext start time, cycling 2 bars at
-// the session tempo. Drums/FX audio without a bpm is a one-shot fired on beat 1 of each bar; everything else
-// loops. A Drums loop at another tempo is stretched (playbackRate); tonal loops play as-is and get flagged.
+// ---------- stack playback: every row's chosen audio from one AudioContext start time, cycling the selected
+// number of bars at the session tempo. Each pass starts fresh sources together: a loop plays its whole-bar
+// length (floor(duration / bar) bars) on repeat and is cut at the end of the pass, so nothing drifts.
+// Drums/FX audio without a bpm is a one-shot fired on beat 1 of each bar. A Drums loop at another tempo is
+// stretched (playbackRate); tonal loops play as-is and get flagged.
 const ONESHOT_ROWS = new Set(["drums", "fx"]);
 let playCtx, playing = null;   // { sources: Set, timer, master, rows }
 const decoded = new Map();     // url -> Promise<AudioBuffer>
@@ -358,14 +361,14 @@ $("stopStack").onclick = stopStack;
 $("playStack").onclick = async () => {
   stopStack();
   const ctx = playCtx ||= new AudioContext(); await ctx.resume();
-  const bpm = +$("stTempo").value || 120, bar = 4 * 60 / bpm, cycle = STACK_BARS * bar;
+  const bpm = +$("stTempo").value || 120, bar = 4 * 60 / bpm, total = +$("stLoopBars").value, cycle = total * bar;
   const rows = LAYERS.filter(L => stack[L.id]?.chosen);
   if (!rows.length) { $("sPlay").textContent = "Nothing chosen yet. Pick or generate something first."; return; }
   $("sPlay").textContent = "Loading…";
   const loaded = await Promise.all(rows.map(L => decode(ctx, stack[L.id].chosen.url).then(buf => ({ L, buf }),
     e => { $("layer-" + L.id).querySelector(".status").textContent = `Couldn't decode for playback: ${e.message}`; return null; })));
   const master = ctx.createGain(); master.gain.value = 0.8; master.connect(ctx.destination);
-  const sources = new Set(), shots = [], t0 = ctx.currentTime + 0.1;
+  const sources = new Set(), shots = [], loops = [], t0 = ctx.currentTime + 0.1;
   const source = (buf, rate = 1) => {
     const s = ctx.createBufferSource(); s.buffer = buf; s.playbackRate.value = rate; s.connect(master);
     sources.add(s); s.onended = () => sources.delete(s); return s;
@@ -376,18 +379,31 @@ $("playStack").onclick = async () => {
     const off = c.bpm && Math.abs(c.bpm - bpm) >= 0.5, rate = off && L.id === "drums" ? bpm / c.bpm : 1;
     st.textContent = !off ? "▶ looping" : rate !== 1 ? `▶ looping, stretched ${c.bpm} → ${bpm} bpm`
       : `⚠ tempo mismatch: ${c.bpm} bpm loop at ${bpm} bpm, playing unstretched`;
-    const s = source(buf, rate);
-    s.loop = true; s.loopStart = 0; s.loopEnd = Math.min(cycle * rate, buf.duration);   // buffer seconds covering one cycle
-    s.start(t0);
+    // whole bars at the session tempo; 50 ms of slack so an 8 s file at 124 bpm (7.74 s = 4 bars) or one a
+    // few ms short from mp3 padding still counts its last bar. Under one bar: loop the whole file.
+    const bars = Math.floor((buf.duration / rate + 0.05) / bar);
+    const loopEnd = bars ? Math.min(bars * bar * rate, buf.duration) : buf.duration;   // in buffer seconds
+    loops.push({ buf, rate, loopEnd });
+    st.textContent += !bars ? " · under 1 bar, whole file repeats" : bars > total ? ` · ${bars} bars, cut to ${total}`
+      : bars < total ? ` · ${bars} bars, repeats` : ` · ${bars} bars`;
   }
-  // one-shots: look ahead 300 ms and schedule the bar downbeats that fall inside it
-  let n = 0;
-  const schedule = () => { for (; t0 + n * bar < ctx.currentTime + 0.3; n++) shots.forEach(b => source(b).start(t0 + n * bar)); };
+  // look ahead 300 ms: start every loop together at each pass, stopped at its end; one-shots on each downbeat
+  let n = 0, c = 0;
+  const schedule = () => {
+    for (; t0 + c * cycle < ctx.currentTime + 0.3; c++) {
+      const tc = t0 + c * cycle;
+      loops.forEach(l => { const s = source(l.buf, l.rate); s.loop = true; s.loopStart = 0; s.loopEnd = l.loopEnd; s.start(tc); s.stop(tc + cycle); });
+    }
+    for (; t0 + n * bar < ctx.currentTime + 0.3; n++) shots.forEach(b => source(b).start(t0 + n * bar));
+    const b = Math.floor((ctx.currentTime - t0) / bar);
+    $("sPlay").textContent = `Playing ${rowsPlaying} rows at ${bpm} bpm · bar ${b < 0 ? 1 : b % total + 1} / ${total}`;
+  };
+  const rowsPlaying = loaded.filter(Boolean).length;
   schedule();
   playing = { sources, timer: setInterval(schedule, 50), master, rows: loaded.filter(Boolean).map(x => x.L) };
   $("stopStack").disabled = false;
-  $("sPlay").textContent = `Playing ${loaded.filter(Boolean).length} rows · ${STACK_BARS} bars at ${bpm} bpm`;
 };
+$("stLoopBars").onchange = () => { if (playing) $("playStack").onclick(); };   // restart everything together
 
 // ---------- session
 $("readBtn").onclick = async () => {
