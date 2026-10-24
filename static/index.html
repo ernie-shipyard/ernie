@@ -88,6 +88,7 @@
     <h2>Mix notes</h2>
     <div class="row">
       <button id="adviseBtn">Advise my session</button>
+      <button id="captureBtn" class="ghost">Advise plugin captures</button>
       <input type="file" id="bounce" accept="audio/*">
       <button id="bounceBtn" class="ghost">Advise this bounce</button>
     </div>
@@ -407,6 +408,11 @@ function renderNotes(notes) {
 $("adviseBtn").onclick = async () => {
   $("sA").textContent = "Reading the set, forming opinions…";
   try { const j = await api("/advise"); say($("sayA"), j.script); play($("audA"), j.audio); renderNotes(j.notes); $("sA").textContent = ""; }
+  catch (e) { $("sA").textContent = e.message; }
+};
+$("captureBtn").onclick = async () => {
+  $("sA").textContent = "Reading finished plugin listens…";
+  try { const j = await api("/advise/captures"); say($("sayA"), j.script); play($("audA"), j.audio); renderNotes(j.notes); $("sA").textContent = j.notes.length ? "" : "No finished plugin captures yet. Record a listen first."; }
   catch (e) { $("sA").textContent = e.message; }
 };
 $("bounceBtn").onclick = async () => {

@@ -32,10 +32,11 @@ bool isLoopbackPeer(const juce::StreamingSocket& socket)
 }
 }
 
-RecordingApi::RecordingApi(CommandHandler onCommand, StatusProvider onStatus)
+RecordingApi::RecordingApi(CommandHandler onCommand, StatusProvider onStatus, CaptureFileProvider onCaptureFile)
     : juce::Thread("Ernie Recording API"),
       commandHandler(std::move(onCommand)),
-      statusProvider(std::move(onStatus))
+      statusProvider(std::move(onStatus)),
+      captureFileProvider(std::move(onCaptureFile))
 {
 }
 
@@ -145,14 +146,24 @@ void RecordingApi::serveClient(std::unique_ptr<juce::StreamingSocket> client)
             break;
 
         received += n;
-        if (juce::String::fromUTF8(static_cast<const char*>(raw.getData()), received).contains("\r\n\r\n"))
-            break;
+        const auto partial = juce::String::fromUTF8(static_cast<const char*>(raw.getData()), received);
+        const auto endOfHeaders = partial.indexOf("\r\n\r\n");
+        if (endOfHeaders >= 0)
+        {
+            int contentLength = 0;
+            const auto headerText = partial.substring(0, endOfHeaders);
+            for (auto line : juce::StringArray::fromLines(headerText))
+                if (line.startsWithIgnoreCase("Content-Length:"))
+                    contentLength = juce::jmax(0, line.fromFirstOccurrenceOf(":", false, false).trim().getIntValue());
+            if (received >= endOfHeaders + 4 + contentLength)
+                break;
+        }
     }
 
     const auto request = juce::String::fromUTF8(static_cast<const char*>(raw.getData()), received);
     const auto headerEnd = request.indexOf("\r\n\r\n");
     const auto header = headerEnd >= 0 ? request.substring(0, headerEnd) : request;
-    const auto body = headerEnd >= 0 ? request.substring(headerEnd + 4) : juce::String();
+    const auto requestBody = headerEnd >= 0 ? request.substring(headerEnd + 4) : juce::String();
 
     const auto requestLine = header.upToFirstOccurrenceOf("\r\n", false, false);
     const auto method = requestLine.upToFirstOccurrenceOf(" ", false, false);
@@ -166,7 +177,58 @@ void RecordingApi::serveClient(std::unique_ptr<juce::StreamingSocket> client)
             tokenHeader = line.fromFirstOccurrenceOf(":", false, false).trim();
     }
 
-    const auto responseBody = handleRequest(method, target, body, tokenHeader);
+    const auto path = target.upToFirstOccurrenceOf("?", false, false);
+    if (method == "GET" && path == "/v1/capture.wav")
+    {
+        if (!tokenMatches(tokenHeader))
+        {
+            const auto errorBody = jsonError("handshake required");
+            const auto response = httpResponse(401, "Unauthorized", errorBody);
+            client->write(response.toRawUTF8(), static_cast<int>(response.getNumBytesAsUTF8()));
+        }
+        else
+        {
+            const auto file = captureFileProvider != nullptr ? captureFileProvider() : juce::File();
+            if (!file.existsAsFile())
+            {
+                const auto errorBody = jsonError("no completed capture is available");
+                const auto response = httpResponse(404, "Not Found", errorBody);
+                client->write(response.toRawUTF8(), static_cast<int>(response.getNumBytesAsUTF8()));
+            }
+            else
+            {
+                const auto prefix = "HTTP/1.1 200 OK\r\nContent-Type: audio/wav\r\nContent-Length: "
+                                    + juce::String(file.getSize()) + "\r\nConnection: close\r\n\r\n";
+                client->write(prefix.toRawUTF8(), static_cast<int>(prefix.getNumBytesAsUTF8()));
+                juce::FileInputStream stream(file);
+                char chunk[16 * 1024];
+                juce::int64 sentBytes = 0;
+                while (!stream.isExhausted())
+                {
+                    const auto count = stream.read(chunk, static_cast<int>(sizeof(chunk)));
+                    if (count <= 0)
+                        break;
+                    int sent = 0;
+                    while (sent < count)
+                    {
+                        const auto written = client->write(chunk + sent, count - sent);
+                        if (written <= 0)
+                            break;
+                        sent += written;
+                    }
+                    if (sent != count)
+                        break;
+                    sentBytes += sent;
+                }
+                if (sentBytes == file.getSize())
+                    file.deleteFile();
+            }
+        }
+        client->close();
+        return;
+    }
+
+    const auto responseBody = handleRequest(method, target, requestBody, tokenHeader);
     auto parsed = juce::JSON::parse(responseBody);
     const auto failed = parsed.getDynamicObject() != nullptr
                         && parsed.getDynamicObject()->hasProperty("ok")
@@ -218,11 +280,14 @@ juce::String RecordingApi::handleRequest(const juce::String& method,
         object->setProperty("handshake_ready", getToken().isNotEmpty());
         object->setProperty("session_id", status.sessionId);
         object->setProperty("last_error", status.lastError);
+        object->setProperty("waiting_for_playback", status.waitingForPlayback);
+        object->setProperty("capture_ready", status.captureReady);
         return jsonOk(object.release());
     }
 
     const auto control = (method == "POST")
                          && (path == "/v1/recording/start"
+                             || path == "/v1/listen"
                              || path == "/v1/recording/stop"
                              || path == "/v1/config"
                              || path == "/v1/source-file");
@@ -247,6 +312,10 @@ juce::String RecordingApi::handleRequest(const juce::String& method,
         if (path == "/v1/recording/start")
         {
             command.type = RecordingCommand::Type::start;
+        }
+        else if (path == "/v1/listen")
+        {
+            command.type = RecordingCommand::Type::listen;
         }
         else if (path == "/v1/source-file")
         {
