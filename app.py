@@ -72,7 +72,9 @@ def analyze_hum(wav_path: str) -> dict:
         raise ValueError("Couldn't hear a melody — try humming louder or closer to the mic.")
 
     midi = librosa.hz_to_midi(f0)
-    root = NOTE_NAMES[int(np.round(np.median(midi))) % 12]
+    # most-sung pitch class, not the median — a C-E-G hum should read as C, not F#
+    pcs = np.bincount((np.round(midi).astype(int) % 12), minlength=12)
+    root = NOTE_NAMES[int(np.argmax(pcs))]
     span = float(np.percentile(midi, 95) - np.percentile(midi, 5))
 
     # contour shape: compare first third to last third
@@ -80,11 +82,11 @@ def analyze_hum(wav_path: str) -> dict:
     start, end = np.mean(midi[: n // 3]), np.mean(midi[-n // 3 :])
     drift = end - start
     if drift > 2:
-        contour = "a melody that rises toward the end"
+        contour = "rises toward the end"
     elif drift < -2:
-        contour = "a melody that falls and resolves downward"
+        contour = "falls and resolves downward"
     else:
-        contour = "a melody that circles around a central note"
+        contour = "circles around a central note"
 
     # how jumpy is it?
     steps = np.abs(np.diff(midi))
@@ -122,8 +124,8 @@ def build_prompt(a: dict, genre: str = "lo-fi hip hop") -> str:
 REVISIONS = [
     (r"\b(slower|slow it down|halve the tempo)\b", lambda p: _retempo(p, 0.75)),
     (r"\b(faster|speed it up|double the tempo)\b",  lambda p: _retempo(p, 1.3)),
-    (r"\b(sad|melancholy|darker|minor)\b",         lambda p: p + " Make it melancholic, in a minor key."),
-    (r"\b(happy|brighter|major|uplifting)\b",      lambda p: p + " Make it bright and uplifting, in a major key."),
+    (r"\b(sad\w*|melanchol\w*|dark\w*|minor|moodier)\b",         lambda p: p + " Make it melancholic, in a minor key."),
+    (r"\b(happ\w*|bright\w*|major|uplift\w*|cheer\w*)\b",      lambda p: p + " Make it bright and uplifting, in a major key."),
     (r"\b(warmer|warm)\b",                         lambda p: p + " Use warm analog textures, soft tape saturation."),
     (r"\b(colder|cold|icy)\b",                     lambda p: p + " Use cold, glassy digital synths."),
     (r"\b(add|with) (some )?drums\b",              lambda p: p + " Add a clear drum groove."),
@@ -136,8 +138,8 @@ REVISIONS = [
     (r"\b(jazz|jazzy)\b",                          lambda p: p + " Give it a jazz feel with extended chords."),
     (r"\b(rock)\b",                                lambda p: p + " Make it a rock arrangement with electric guitars."),
     (r"\b(acoustic)\b",                            lambda p: p + " Acoustic instruments only."),
-    (r"\b(epic|cinematic|bigger)\b",               lambda p: p + " Make it epic and cinematic, building to a big climax."),
-    (r"\b(calm|chill|softer|quieter)\b",           lambda p: p + " Make it calmer and softer."),
+    (r"\b(epic|cinematic|bigger|huge|dramatic)\b",               lambda p: p + " Make it epic and cinematic, building to a big climax."),
+    (r"\b(calm\w*|chill\w*|soft\w*|quiet\w*|gentl\w*)\b",           lambda p: p + " Make it calmer and softer."),
 ]
 
 
