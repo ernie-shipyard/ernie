@@ -22,6 +22,7 @@ class TrackState:
     name: str
     role: Optional[str]
     registered_at: datetime
+    latest_capture_id: Optional[str] = None
     last_seen_at: Optional[datetime] = None
     last_seen_monotonic: Optional[float] = None
     latest_measurements: Optional[Measurements] = None
@@ -58,12 +59,18 @@ class TrackRegistry:
         with self._lock:
             return self._tracks.get(track_id)
 
-    def update_measurements(self, track_id: str, measurements: Measurements) -> Optional[TrackState]:
+    def update_measurements(
+        self,
+        track_id: str,
+        measurements: Measurements,
+        capture_id: Optional[str] = None,
+    ) -> Optional[TrackState]:
         with self._lock:
             track = self._tracks.get(track_id)
             if track is None:
                 return None
             track.latest_measurements = measurements
+            track.latest_capture_id = capture_id
             track.last_seen_at = utc_now()
             track.last_seen_monotonic = time.monotonic()
             return track

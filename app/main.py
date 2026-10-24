@@ -1,20 +1,27 @@
-"""Local FastAPI service for ERNIE's plugin telemetry and mix feedback."""
+"""Local API for agent-requested, one-shot JUCE capture and mix analysis."""
 
-import io
 import os
+import tempfile
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import List
 from urllib.parse import urlsplit
 
-import numpy as np
 import soundfile as sf
-from fastapi import FastAPI, HTTPException, Request, Response, status
+from fastapi import FastAPI, Header, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.dsp import AudioDecodeError, analyze_audio
+from app.captures import CaptureRegistry, CaptureState
+from app.dsp import AudioDecodeError, analyze_wav_file
 from app.feedback import build_recommendations
 from app.models import (
+    CaptureCommand,
+    CaptureProgressRequest,
+    CaptureResponse,
     HealthResponse,
+    ListenPollResponse,
+    ListenRequest,
+    MixAnalysisRequest,
     MixAnalysisResponse,
     TrackFeedback,
     TrackListResponse,
@@ -25,8 +32,7 @@ from app.models import (
 from app.registry import STALE_AFTER_SECONDS, TrackRegistry, TrackState
 
 
-MAX_AUDIO_BYTES = 16 * 1024 * 1024
-MAX_AUDIO_SECONDS = 30.0
+MAX_AUDIO_BYTES = 512 * 1024 * 1024
 ALLOWED_WAV_CONTENT_TYPES = {"audio/wav", "audio/x-wav", "application/wav"}
 DEFAULT_CORS_ORIGINS = [
     "http://localhost:3000",
@@ -65,17 +71,18 @@ def _cors_origins() -> List[str]:
 
 
 registry = TrackRegistry()
+captures = CaptureRegistry()
 app = FastAPI(
     title="ERNIE Local Mix Analysis API",
-    version="0.1.0",
-    description="Local plugin telemetry and evidence-based mix suggestions.",
+    version="0.2.0",
+    description="Agent-requested JUCE capture and evidence-based mix suggestions.",
 )
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins(),
     allow_credentials=False,
     allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type"],
+    allow_headers=["Content-Type", "X-Capture-ID"],
 )
 
 
@@ -84,6 +91,7 @@ def _track_view(track: TrackState) -> TrackView:
         id=track.id,
         name=track.name,
         role=track.role,
+        latest_capture_id=track.latest_capture_id,
         registered_at=track.registered_at,
         last_seen_at=track.last_seen_at,
         is_stale=track.is_stale(),
@@ -91,37 +99,78 @@ def _track_view(track: TrackState) -> TrackView:
     )
 
 
-async def _read_limited_body(request: Request) -> bytes:
+def _capture_response(capture: CaptureState) -> CaptureResponse:
+    return CaptureResponse(
+        capture_id=capture.capture_id,
+        track_id=capture.track_id,
+        status=capture.status,
+        requested_at=capture.requested_at,
+        recording_started_at=capture.recording_started_at,
+        completed_at=capture.completed_at,
+        minimum_context_seconds=capture.minimum_context_seconds,
+        max_duration_seconds=capture.max_duration_seconds,
+        duration_seconds=capture.duration_seconds,
+        context_too_short=capture.context_too_short,
+        measurements=capture.measurements,
+    )
+
+
+def _capture_command(capture: CaptureState) -> CaptureCommand:
+    return CaptureCommand(
+        capture_id=capture.capture_id,
+        track_id=capture.track_id,
+        status=capture.status,
+        requested_at=capture.requested_at,
+        minimum_context_seconds=capture.minimum_context_seconds,
+        max_duration_seconds=capture.max_duration_seconds,
+    )
+
+
+async def _spool_limited_body(request: Request) -> str:
     content_length = request.headers.get("content-length")
     if content_length is not None:
         try:
             if int(content_length) > MAX_AUDIO_BYTES:
-                raise HTTPException(status_code=413, detail="WAV payload exceeds the 16 MiB limit.")
+                raise HTTPException(status_code=413, detail="WAV payload exceeds the 512 MiB limit.")
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid Content-Length header.")
-    chunks = []
+
+    path = None
     size = 0
-    async for chunk in request.stream():
-        size += len(chunk)
-        if size > MAX_AUDIO_BYTES:
-            raise HTTPException(status_code=413, detail="WAV payload exceeds the 16 MiB limit.")
-        chunks.append(chunk)
-    return b"".join(chunks)
-
-
-def _decode_wav(payload: bytes):
     try:
-        audio, sample_rate = sf.read(io.BytesIO(payload), dtype="float32", always_2d=True)
+        with tempfile.NamedTemporaryFile(prefix="ernie-capture-", suffix=".wav", delete=False) as cache_file:
+            path = cache_file.name
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > MAX_AUDIO_BYTES:
+                    raise HTTPException(status_code=413, detail="WAV payload exceeds the 512 MiB limit.")
+                cache_file.write(chunk)
+        if size == 0:
+            raise HTTPException(status_code=400, detail="WAV request body is empty.")
+        return path
+    except Exception:
+        if path is not None and os.path.exists(path):
+            os.unlink(path)
+        raise
+
+
+def _analyze_cached_wav(path: str, max_duration_seconds: float):
+    try:
+        info = sf.info(path)
     except (RuntimeError, ValueError, TypeError) as error:
         raise HTTPException(status_code=400, detail="Request body is not a readable WAV file.") from error
-    if audio.ndim != 2 or audio.shape[1] not in (1, 2):
+    if info.channels not in (1, 2):
         raise HTTPException(status_code=422, detail="Only mono and stereo WAV audio is supported.")
-    if audio.shape[0] == 0 or sample_rate <= 0:
+    if info.frames <= 0 or info.samplerate <= 0:
         raise HTTPException(status_code=400, detail="WAV audio must contain samples and a valid sample rate.")
-    if audio.shape[0] / float(sample_rate) > MAX_AUDIO_SECONDS:
-        raise HTTPException(status_code=413, detail="WAV window exceeds the 30 second limit.")
+    duration = info.frames / float(info.samplerate)
+    if duration > max_duration_seconds:
+        raise HTTPException(
+            status_code=413,
+            detail="WAV duration exceeds the requested {:.1f} second capture limit.".format(max_duration_seconds),
+        )
     try:
-        return analyze_audio(np.asarray(audio, dtype=np.float64), int(sample_rate))
+        return analyze_wav_file(path)
     except AudioDecodeError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
 
@@ -150,21 +199,98 @@ def register_track(body: TrackRegistration, response: Response) -> TrackRegistra
     )
 
 
-@app.post("/tracks/{track_id}/audio", response_model=TrackView, tags=["tracks"])
-async def upload_audio(track_id: str, request: Request) -> TrackView:
+@app.post(
+    "/tracks/{track_id}/listen",
+    response_model=CaptureResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    tags=["capture"],
+)
+def request_listen(track_id: str, body: ListenRequest) -> CaptureResponse:
     if registry.get(track_id) is None:
         raise HTTPException(status_code=404, detail="Track is not registered.")
+    if body.minimum_context_seconds > body.max_duration_seconds:
+        raise HTTPException(status_code=422, detail="Minimum context cannot exceed the capture duration limit.")
+    try:
+        capture = captures.create(track_id, body.minimum_context_seconds, body.max_duration_seconds)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return _capture_response(capture)
+
+
+@app.get("/tracks/{track_id}/listen", response_model=ListenPollResponse, tags=["capture"])
+def poll_listen(track_id: str) -> ListenPollResponse:
+    if registry.get(track_id) is None:
+        raise HTTPException(status_code=404, detail="Track is not registered.")
+    capture = captures.active_for_track(track_id)
+    return ListenPollResponse(capture=_capture_command(capture) if capture is not None else None)
+
+
+@app.post("/captures/{capture_id}/status", response_model=CaptureResponse, tags=["capture"])
+def update_capture_status(capture_id: str, body: CaptureProgressRequest) -> CaptureResponse:
+    capture = captures.get(capture_id)
+    if capture is None:
+        raise HTTPException(status_code=404, detail="Capture request was not found.")
+    try:
+        capture = captures.update_plugin_status(capture_id, body.status)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return _capture_response(capture)
+
+
+@app.get("/captures/{capture_id}", response_model=CaptureResponse, tags=["capture"])
+def get_capture(capture_id: str) -> CaptureResponse:
+    capture = captures.get(capture_id)
+    if capture is None:
+        raise HTTPException(status_code=404, detail="Capture request was not found.")
+    return _capture_response(capture)
+
+
+@app.post("/captures/{capture_id}/cancel", response_model=CaptureResponse, tags=["capture"])
+def cancel_capture(capture_id: str) -> CaptureResponse:
+    try:
+        capture = captures.cancel(capture_id)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    if capture is None:
+        raise HTTPException(status_code=404, detail="Capture request was not found.")
+    return _capture_response(capture)
+
+
+@app.post("/tracks/{track_id}/audio", response_model=TrackView, tags=["tracks"])
+async def upload_capture_audio(
+    track_id: str,
+    request: Request,
+    capture_id: str = Header(..., alias="X-Capture-ID"),
+) -> TrackView:
+    track = registry.get(track_id)
+    if track is None:
+        raise HTTPException(status_code=404, detail="Track is not registered.")
+    capture = captures.get(capture_id)
+    if capture is None or capture.track_id != track_id:
+        raise HTTPException(status_code=404, detail="Listen request was not found for this track.")
+    if capture.status not in {"requested", "waiting_for_playback", "recording"}:
+        raise HTTPException(status_code=409, detail="This listen request is no longer accepting audio.")
     content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
     if content_type not in ALLOWED_WAV_CONTENT_TYPES:
         raise HTTPException(status_code=415, detail="Send raw WAV bytes with Content-Type: audio/wav.")
-    payload = await _read_limited_body(request)
-    if not payload:
-        raise HTTPException(status_code=400, detail="WAV request body is empty.")
-    measurements = _decode_wav(payload)
-    track = registry.update_measurements(track_id, measurements)
-    if track is None:
+    try:
+        captures.begin_processing(capture_id)
+        path = await _spool_limited_body(request)
+        try:
+            measurements = _analyze_cached_wav(path, capture.max_duration_seconds)
+        finally:
+            if os.path.exists(path):
+                os.unlink(path)
+        completed = captures.complete(capture_id, measurements)
+    except Exception:
+        captures.fail(capture_id)
+        raise
+    if completed is None:
+        raise HTTPException(status_code=404, detail="Listen request was not found.")
+    updated = registry.update_measurements(track_id, measurements, capture_id=capture_id)
+    if updated is None:
         raise HTTPException(status_code=404, detail="Track is not registered.")
-    return _track_view(track)
+    return _track_view(updated)
 
 
 @app.get("/tracks", response_model=TrackListResponse, tags=["tracks"])
@@ -174,17 +300,61 @@ def list_tracks() -> TrackListResponse:
 
 
 @app.post("/mix/analyze", response_model=MixAnalysisResponse, tags=["mix"])
-def analyze_mix() -> MixAnalysisResponse:
+def analyze_mix(body: MixAnalysisRequest = MixAnalysisRequest()) -> MixAnalysisResponse:
     all_tracks = registry.list_tracks()
     now = datetime.now(timezone.utc)
-    active = [
-        track for track in all_tracks
-        if not track.is_stale() and track.latest_measurements is not None
-    ]
-    stale_ids = [
-        track.id for track in all_tracks
-        if track.is_stale() or track.latest_measurements is None
-    ]
+    short_context_ids = []
+    stale_ids = []
+    snapshot_staleness = {}
+    if body.capture_ids:
+        if len(body.capture_ids) > 128:
+            raise HTTPException(status_code=422, detail="At most 128 capture IDs may be analyzed at once.")
+        if len(body.capture_ids) != len(set(body.capture_ids)):
+            raise HTTPException(status_code=422, detail="capture_ids must not contain duplicates.")
+        selected = []
+        selected_track_ids = set()
+        for capture_id in body.capture_ids:
+            capture = captures.get(capture_id)
+            if capture is None:
+                raise HTTPException(status_code=404, detail="Capture {} was not found.".format(capture_id))
+            if capture.context_too_short:
+                short_context_ids.append(capture_id)
+                continue
+            if capture.status != "completed" or capture.measurements is None:
+                raise HTTPException(status_code=409, detail="Capture {} is not complete.".format(capture_id))
+            source_track = registry.get(capture.track_id)
+            if source_track is None:
+                raise HTTPException(status_code=404, detail="Track for capture {} was not found.".format(capture_id))
+            if source_track.id in selected_track_ids:
+                raise HTTPException(status_code=422, detail="Provide at most one capture per track.")
+            selected_track_ids.add(source_track.id)
+            snapshot_staleness[capture_id] = (
+                capture.completed_at is None
+                or (now - capture.completed_at).total_seconds() > STALE_AFTER_SECONDS
+            )
+            selected.append(replace(
+                source_track,
+                latest_capture_id=capture.capture_id,
+                last_seen_at=capture.completed_at,
+                latest_measurements=capture.measurements,
+            ))
+        active = selected
+    else:
+        fresh = [
+            track for track in all_tracks
+            if not track.is_stale() and track.latest_measurements is not None
+        ]
+        active = []
+        for track in fresh:
+            latest_capture = captures.get(track.latest_capture_id) if track.latest_capture_id else None
+            if latest_capture is not None and latest_capture.context_too_short:
+                short_context_ids.append(latest_capture.capture_id)
+            else:
+                active.append(track)
+        stale_ids = [
+            track.id for track in all_tracks
+            if track.is_stale() or track.latest_measurements is None
+        ]
     recommendations_by_track = build_recommendations(active)
     recommendations = [item for values in recommendations_by_track.values() for item in values]
     priority_order = {"high": 0, "medium": 1, "low": 2}
@@ -194,6 +364,8 @@ def analyze_mix() -> MixAnalysisResponse:
     feedback = [
         TrackFeedback(
             track_id=track.id,
+            capture_id=track.latest_capture_id,
+            snapshot_is_stale=snapshot_staleness.get(track.latest_capture_id, track.is_stale()),
             name=track.name,
             role=track.role,
             measurements=track.latest_measurements,
@@ -206,5 +378,7 @@ def analyze_mix() -> MixAnalysisResponse:
         analyzed_at=now,
         tracks=feedback,
         recommendations=recommendations,
+        analyzed_capture_ids=[track.latest_capture_id for track in active if track.latest_capture_id],
         excluded_stale_track_ids=stale_ids,
+        excluded_short_context_capture_ids=short_context_ids,
     )

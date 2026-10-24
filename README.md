@@ -1,6 +1,6 @@
 # ERNIE local mix analysis API
 
-FastAPI service for JUCE plugin telemetry and grounded, per-track mix suggestions. The DSP path is deterministic and has no external API dependency. Track state is held in memory and is cleared when the server restarts.
+FastAPI service for agent-requested, one-shot JUCE captures and grounded mix suggestions. The plugin does not stream or continuously record audio. The agent requests a capture for a specific plugin instance; the plugin waits for DAW playback, records until playback stops (or the requested maximum duration), then uploads one WAV. The service stores track state in memory and deletes each temporary WAV after analysis.
 
 ## Run locally
 
@@ -12,6 +12,18 @@ uvicorn app.main:app --reload
 ```
 
 OpenAPI documentation is available at `http://127.0.0.1:8000/docs`.
+
+## Agent and plugin handshake
+
+1. Register the plugin instance with `POST /tracks/register`; the returned `id` identifies that instance.
+2. The agent requests a one-shot listen with `POST /tracks/{id}/listen`.
+3. The plugin polls `GET /tracks/{id}/listen`. When it receives a capture ID, it reports `waiting_for_playback`, then `recording` when the DAW starts.
+4. At DAW stop, the plugin uploads one raw WAV to `POST /tracks/{id}/audio` with the `X-Capture-ID` header.
+5. The agent polls `GET /captures/{capture_id}` for processing status and measurements. `POST /mix/analyze` returns feedback for recent, sufficiently long captures.
+
+If playback never starts or the agent stops waiting, it can cancel the request with `POST /captures/{capture_id}/cancel`; this frees the plugin instance for another listen request.
+
+Only one listen request can be active per plugin instance. Plugin status updates use `POST /captures/{capture_id}/status` with `{"status":"waiting_for_playback"}` or `{"status":"recording"}`. The plugin should stop at the command's `max_duration_seconds` even if the DAW continues playing.
 
 ## API contracts
 
@@ -25,109 +37,97 @@ Returns `200` while the local service is available.
 
 ### `POST /tracks/register`
 
-Register one plugin instance. The client supplies a unique per-instance ID; re-registering the same ID updates its name/role and keeps its existing measurements. New registrations return `201`; repeated registrations return `200`.
-
 Request:
 
 ```json
 {"instance_id":"juce-instance-7f3a","name":"Lead vocal","role":"vocal"}
 ```
 
-`role` is optional. Response:
+`role` is optional. The client supplies a unique per-instance ID. Re-registering the same ID updates its name/role and retains its measurements. New registrations return `201`; repeated registrations return `200`.
 
 ```json
 {"id":"juce-instance-7f3a","name":"Lead vocal","role":"vocal","registered_at":"2026-10-24T15:00:00Z"}
 ```
 
-### `POST /tracks/{id}/audio`
+### `POST /tracks/{id}/listen`
 
-Send raw WAV bytes with `Content-Type: audio/wav`. Sample rate and channel count are read from the WAV header; supported layouts are mono and stereo. Windows are limited to 16 MiB and 30 seconds.
+The agent requests a capture for one plugin. Both request fields are optional; defaults are a minimum useful context of 10 seconds and maximum capture of 300 seconds. Maximum duration is capped at 600 seconds.
 
-Returns the corresponding track view, including its latest measurements:
+```json
+{"minimum_context_seconds":10,"max_duration_seconds":300}
+```
+
+Returns `202` and a unique capture ID:
 
 ```json
 {
-  "id":"juce-instance-7f3a",
-  "name":"Lead vocal",
-  "role":"vocal",
-  "registered_at":"2026-10-24T15:00:00Z",
-  "last_seen_at":"2026-10-24T15:00:01Z",
-  "is_stale":false,
-  "latest_measurements":{
-    "measured_at":"2026-10-24T15:00:01Z",
-    "sample_rate":44100,
-    "channels":1,
-    "duration_seconds":0.5,
-    "is_silent":false,
-    "peak_dbfs":-6.02,
-    "rms_dbfs":-9.03,
-    "crest_factor_db":3.01,
-    "frequency_bands":{
-      "low":{"low_hz":20,"high_hz":120,"energy_dbfs":-58.1},
-      "low_mid":{"low_hz":120,"high_hz":500,"energy_dbfs":-52.0},
-      "mid":{"low_hz":500,"high_hz":2000,"energy_dbfs":-9.1},
-      "high_mid":{"low_hz":2000,"high_hz":6000,"energy_dbfs":-55.4},
-      "high":{"low_hz":6000,"high_hz":22050,"energy_dbfs":-68.0}
-    },
-    "stereo_correlation":null
-  }
+  "capture_id":"c3435f45-0e35-495f-b94c-950e0eeb752f",
+  "track_id":"juce-instance-7f3a",
+  "status":"requested",
+  "requested_at":"2026-10-24T15:00:00Z",
+  "recording_started_at":null,
+  "completed_at":null,
+  "minimum_context_seconds":10,
+  "max_duration_seconds":300,
+  "duration_seconds":null,
+  "context_too_short":null,
+  "measurements":null
 }
 ```
 
-Band entries are omitted when the sample rate's Nyquist frequency does not reach that band's lower edge. Undefined values, such as dBFS for digital silence and stereo correlation for mono, are `null`. Band energy is measured evidence, not by itself an EQ diagnosis.
+### `GET /tracks/{id}/listen`
 
-### `GET /tracks`
+Plugin polling endpoint. Returns `{"capture":null}` when no listen command is active, or the current command with its capture ID, minimum context, maximum duration, and status. Repeated polls return the same capture ID, so the plugin can safely deduplicate requests.
 
-Returns `{ "tracks": [...], "stale_after_seconds": 10 }`. A track without an update in the last 10 seconds is marked `is_stale: true`; its last measurements remain visible with their original timestamp.
+### `POST /captures/{capture_id}/status`
+
+The plugin reports `waiting_for_playback` after receiving a command and `recording` when the DAW starts playback. Invalid transitions return `409`.
+
+### `POST /tracks/{id}/audio`
+
+Upload the completed capture once, after DAW stop, as raw WAV bytes. Set `Content-Type: audio/wav` and `X-Capture-ID: <capture_id>`. Sample rate and mono/stereo channel count are read from the WAV. Audio is streamed to a temporary file and analyzed in bounded-size blocks; that cache file is deleted when analysis completes.
+
+Captures are limited to 512 MiB and the per-request duration limit (300 seconds by default; up to 600 seconds). Unsupported channel layouts return `422`; malformed WAVs return `400`.
+
+### `GET /captures/{capture_id}`
+
+Returns the capture status and, after upload, the duration and measurements. If the recording is shorter than the request's `minimum_context_seconds`, status becomes `context_too_short` and `context_too_short` is `true`. Measurements remain available for inspection, but `/mix/analyze` excludes that capture from feedback.
+
+The agent can cancel an active request with `POST /captures/{capture_id}/cancel`. Completed or cancelled captures cannot be uploaded again.
+
+### Measurements and `GET /tracks`
+
+WAV analysis measures peak and RMS dBFS, crest factor, frequency-band energy, and stereo correlation. Silence and undefined metrics are `null`. Band entries are omitted when the sample rate's Nyquist frequency does not reach that band's lower edge. `GET /tracks` returns each track's latest capture ID, latest measurements, capture timestamp, and `is_stale` flag. Measurements older than 10 seconds are marked stale and excluded from `/mix/analyze`; their timestamps remain visible.
 
 ### `POST /mix/analyze`
 
-No request body. Returns fresh tracks with their measurements and per-track recommendations, plus the same recommendations ranked across the mix. Stale tracks and registered tracks that have not uploaded audio are listed in `excluded_stale_track_ids` and are not treated as current.
+With no body, returns per-track and globally ranked recommendations for recent, sufficiently long captures, plus IDs of stale and too-short captures that were excluded. To analyze the exact captures returned by the listen flow, pass their IDs; this analyzes those snapshots even if they are older than 10 seconds, while marking each `snapshot_is_stale` rather than presenting it as current:
+
+```json
+{"capture_ids":["c3435f45-0e35-495f-b94c-950e0eeb752f"]}
+```
+
+The response lists `analyzed_capture_ids` and each track's `capture_id`. Recommendation objects include priority, rank, suggestion, reasoning, and measured evidence. A strong frequency band alone never creates an EQ warning. Same-role RMS differences are framed as listening cues, not target levels.
+
+Example recommendation:
 
 ```json
 {
-  "analyzed_at":"2026-10-24T15:00:02Z",
-  "tracks":[
-    {
-      "track_id":"juce-instance-7f3a",
-      "name":"Lead vocal",
-      "role":"vocal",
-      "measurements":{"sample_rate":44100,"channels":1,"peak_dbfs":-0.04,"rms_dbfs":-8.1,"crest_factor_db":8.06,"is_silent":false,"duration_seconds":0.5,"measured_at":"2026-10-24T15:00:01Z","frequency_bands":{},"stereo_correlation":null},
-      "recommendations":[
-        {
-          "priority":"medium",
-          "rank":1,
-          "code":"near_full_scale",
-          "track_id":"juce-instance-7f3a",
-          "message":"Consider leaving more peak headroom on this track.",
-          "reasoning":"The measured peak is within 0.1 dB of full scale; this is a headroom check, not proof of audible clipping.",
-          "evidence":{"peak_dbfs":-0.04,"threshold_dbfs":-0.1}
-        }
-      ]
-    }
-  ],
-  "recommendations":[
-    {
-      "priority":"medium",
-      "rank":1,
-      "code":"near_full_scale",
-      "track_id":"juce-instance-7f3a",
-      "message":"Consider leaving more peak headroom on this track.",
-      "reasoning":"The measured peak is within 0.1 dB of full scale; this is a headroom check, not proof of audible clipping.",
-      "evidence":{"peak_dbfs":-0.04,"threshold_dbfs":-0.1}
-    }
-  ],
-  "excluded_stale_track_ids":[]
+  "priority":"medium",
+  "rank":1,
+  "code":"near_full_scale",
+  "track_id":"juce-instance-7f3a",
+  "message":"Consider leaving more peak headroom on this track.",
+  "reasoning":"The measured peak is within 0.1 dB of full scale; this is a headroom check, not proof of audible clipping.",
+  "evidence":{"peak_dbfs":-0.04,"threshold_dbfs":-0.1}
 }
 ```
 
-Recommendation objects always include a suggestion, reasoning, and measured evidence. Same-role RMS comparisons are phrased as listening cues, not target levels. Frequency-band concentration alone never creates an EQ warning.
+## CORS, errors, and tests
 
-## Errors, CORS, and tests
+CORS is restricted to explicit localhost/127.0.0.1 development origins on ports 3000 and 5173 by default. `ERNIE_CORS_ORIGINS` can add explicit HTTP loopback origins with ports; public origins and wildcards are ignored.
 
-Invalid WAV data returns `400`; unsupported channel layouts return `422`; unsupported content types return `415`; unregistered tracks return `404`; upload limits return `413`. FastAPI uses its standard `{"detail":"..."}` error body.
-
-CORS is restricted to explicit development origins: localhost and 127.0.0.1 on ports 3000 and 5173. Override the list with comma-separated `ERNIE_CORS_ORIGINS`; do not use `*` for production.
+Errors use FastAPI's `{"detail":"..."}` format. Common statuses: `404` unknown track/capture, `409` a conflicting listen request or invalid state, `413` capture exceeds size/duration limits, `415` unsupported content type, and `422` unsupported WAV channels or invalid request values.
 
 Run tests with:
 

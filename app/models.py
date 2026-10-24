@@ -17,6 +17,28 @@ class TrackRegistrationResponse(BaseModel):
     registered_at: datetime
 
 
+class ListenRequest(BaseModel):
+    minimum_context_seconds: float = Field(10.0, gt=0.0, le=600.0)
+    max_duration_seconds: float = Field(300.0, gt=0.0, le=600.0)
+
+
+class CaptureCommand(BaseModel):
+    capture_id: str
+    track_id: str
+    status: str
+    requested_at: datetime
+    minimum_context_seconds: float
+    max_duration_seconds: float
+
+
+class ListenPollResponse(BaseModel):
+    capture: Optional[CaptureCommand]
+
+
+class CaptureProgressRequest(BaseModel):
+    status: str
+
+
 class BandEnergy(BaseModel):
     low_hz: float
     high_hz: float
@@ -36,10 +58,25 @@ class Measurements(BaseModel):
     stereo_correlation: Optional[float]
 
 
+class CaptureResponse(BaseModel):
+    capture_id: str
+    track_id: str
+    status: str
+    requested_at: datetime
+    recording_started_at: Optional[datetime]
+    completed_at: Optional[datetime]
+    minimum_context_seconds: float
+    max_duration_seconds: float
+    duration_seconds: Optional[float]
+    context_too_short: Optional[bool]
+    measurements: Optional[Measurements] = None
+
+
 class TrackView(BaseModel):
     id: str
     name: str
     role: Optional[str]
+    latest_capture_id: Optional[str]
     registered_at: datetime
     last_seen_at: Optional[datetime]
     is_stale: bool
@@ -63,6 +100,8 @@ class Recommendation(BaseModel):
 
 class TrackFeedback(BaseModel):
     track_id: str
+    capture_id: Optional[str]
+    snapshot_is_stale: bool
     name: str
     role: Optional[str]
     measurements: Measurements
@@ -73,7 +112,13 @@ class MixAnalysisResponse(BaseModel):
     analyzed_at: datetime
     tracks: List[TrackFeedback]
     recommendations: List[Recommendation]
+    analyzed_capture_ids: List[str]
     excluded_stale_track_ids: List[str]
+    excluded_short_context_capture_ids: List[str]
+
+
+class MixAnalysisRequest(BaseModel):
+    capture_ids: List[str] = Field(default_factory=list)
 
 
 class HealthResponse(BaseModel):
