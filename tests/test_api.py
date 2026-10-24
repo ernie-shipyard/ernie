@@ -1,4 +1,5 @@
 import io
+import json
 from datetime import datetime, timedelta, timezone
 
 import numpy as np
@@ -79,6 +80,50 @@ def test_agent_listen_request_is_polled_and_returns_capture_status(client):
     ).json()["status"] == "waiting_for_playback"
     assert client.post("/captures/{}/cancel".format(capture_id)).json()["status"] == "cancelled"
     assert client.get("/tracks/track-a/listen").json()["capture"] is None
+
+
+def test_plugin_listen_orchestrates_juce_capture_and_analysis(client, monkeypatch, tmp_path):
+    register(client)
+    sample_rate = 16000
+    time = np.arange(sample_rate // 2) / sample_rate
+    payload = wav_bytes(0.25 * np.sin(2 * np.pi * 440 * time), sample_rate)
+    statuses = iter([
+        {"recording": True, "capture_ready": False},
+        {"recording": False, "capture_ready": True},
+    ])
+
+    def fake_plugin_request(method, url, token="", payload=None, timeout=2.0):
+        if url.endswith("handshake"):
+            return json.dumps({"token": "local-test-token"}).encode()
+        if url.endswith("/v1/listen"):
+            assert method == "POST"
+            assert token == "local-test-token"
+            assert payload["buffer_duration_seconds"] == 2.0
+            return b'{"ok":true}'
+        if url.endswith("/v1/status"):
+            return json.dumps(next(statuses)).encode()
+        raise AssertionError("unexpected plugin request: {}".format(url))
+
+    def fake_download(url, token, timeout=30.0):
+        assert url.endswith("/v1/capture.wav")
+        assert token == "local-test-token"
+        path = tmp_path / "capture.wav"
+        path.write_bytes(payload)
+        return str(path)
+
+    monkeypatch.setattr("mixengine.main._plugin_request", fake_plugin_request)
+    monkeypatch.setattr("mixengine.main._download_plugin_wav", fake_download)
+    response = client.post(
+        "/tracks/track-a/plugin-listen",
+        json={"plugin_port": 17841, "minimum_context_seconds": 0.1,
+              "max_duration_seconds": 2.0, "playback_start_timeout_seconds": 1.0},
+    )
+    assert response.status_code == 202
+    capture_id = response.json()["capture_id"]
+    completed = client.get("/captures/{}".format(capture_id)).json()
+    assert completed["status"] == "completed"
+    assert completed["measurements"]["channels"] == 1
+    assert registry.get("track-a").latest_capture_id == capture_id
 
 
 def test_mono_wav_measurements_and_list_contract(client):

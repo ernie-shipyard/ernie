@@ -1,14 +1,18 @@
 """Local API for agent-requested, one-shot JUCE capture and mix analysis."""
 
 import os
+import json
 import tempfile
+import threading
+import time
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import List
 from urllib.parse import urlsplit
 
 import soundfile as sf
-from fastapi import FastAPI, Header, HTTPException, Request, Response, status
+from urllib.request import Request as UrlRequest, urlopen
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 
 from mixengine.captures import CaptureRegistry, CaptureState
@@ -23,6 +27,7 @@ from mixengine.models import (
     ListenRequest,
     MixAnalysisRequest,
     MixAnalysisResponse,
+    PluginListenRequest,
     TrackFeedback,
     TrackListResponse,
     TrackRegistration,
@@ -72,6 +77,8 @@ def _cors_origins() -> List[str]:
 
 registry = TrackRegistry()
 captures = CaptureRegistry()
+_plugin_ports_lock = threading.Lock()
+_plugin_ports_active = set()
 app = FastAPI(
     title="ERNIE Local Mix Analysis API",
     version="0.2.0",
@@ -124,6 +131,58 @@ def _capture_command(capture: CaptureState) -> CaptureCommand:
         minimum_context_seconds=capture.minimum_context_seconds,
         max_duration_seconds=capture.max_duration_seconds,
     )
+
+
+def _plugin_request(method: str, url: str, token: str = "", payload=None, timeout: float = 2.0) -> bytes:
+    headers = {}
+    data = None
+    if token:
+        headers["X-Ernie-Token"] = token
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+        data = json.dumps(payload).encode("utf-8")
+    request = UrlRequest(url, data=data, headers=headers, method=method)
+    with urlopen(request, timeout=timeout) as response:
+        return response.read()
+
+
+def _download_plugin_wav(url: str, token: str, timeout: float = 30.0) -> str:
+    """Stream the plugin's WAV to a temporary file instead of holding audio in RAM."""
+    request = UrlRequest(url, headers={"X-Ernie-Token": token}, method="GET")
+    path = None
+    size = 0
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            with tempfile.NamedTemporaryFile(prefix="ernie-plugin-", suffix=".wav", delete=False) as cached:
+                path = cached.name
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > MAX_AUDIO_BYTES:
+                        raise ValueError("Plugin WAV exceeds the 512 MiB analysis limit.")
+                    cached.write(chunk)
+        if size == 0:
+            raise ValueError("Plugin returned an empty WAV file.")
+        return path
+    except Exception:
+        if path is not None and os.path.exists(path):
+            os.unlink(path)
+        raise
+
+
+def _reserve_plugin_port(port: int) -> bool:
+    with _plugin_ports_lock:
+        if port in _plugin_ports_active:
+            return False
+        _plugin_ports_active.add(port)
+        return True
+
+
+def _release_plugin_port(port: int) -> None:
+    with _plugin_ports_lock:
+        _plugin_ports_active.discard(port)
 
 
 async def _spool_limited_body(request: Request) -> str:
@@ -214,6 +273,95 @@ def request_listen(track_id: str, body: ListenRequest) -> CaptureResponse:
         capture = captures.create(track_id, body.minimum_context_seconds, body.max_duration_seconds)
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
+    return _capture_response(capture)
+
+
+def _run_plugin_capture(track_id: str, capture_id: str, port: int, token: str,
+                        playback_timeout: float, max_duration: float) -> None:
+    """Poll one loopback JUCE instance, fetch its WAV, and run the normal DSP path."""
+    base = "http://127.0.0.1:{}".format(port)
+    deadline = time.monotonic() + playback_timeout + max_duration + 15.0
+    try:
+        while time.monotonic() < deadline:
+            current = captures.get(capture_id)
+            if current is None or current.status in {"cancelled", "failed"}:
+                _plugin_request("POST", base + "/v1/recording/stop", token=token)
+                return
+
+            status_payload = json.loads(_plugin_request("GET", base + "/v1/status", timeout=2))
+            if status_payload.get("recording"):
+                current = captures.get(capture_id)
+                if current is not None and current.status == "waiting_for_playback":
+                    captures.update_plugin_status(capture_id, "recording")
+
+            if status_payload.get("capture_ready"):
+                captures.begin_processing(capture_id)
+                cached_path = _download_plugin_wav(base + "/v1/capture.wav", token, timeout=30)
+                try:
+                    measurements = _analyze_cached_wav(cached_path, max_duration)
+                finally:
+                    if os.path.exists(cached_path):
+                        os.unlink(cached_path)
+                captures.complete(capture_id, measurements)
+                registry.update_measurements(track_id, measurements, capture_id=capture_id)
+                return
+            time.sleep(0.25)
+
+        _plugin_request("POST", base + "/v1/recording/stop", token=token)
+        captures.fail(capture_id)
+    except Exception:
+        captures.fail(capture_id)
+    finally:
+        _release_plugin_port(port)
+
+
+@app.post("/tracks/{track_id}/plugin-listen", response_model=CaptureResponse,
+          status_code=status.HTTP_202_ACCEPTED, tags=["capture"])
+def request_plugin_listen(track_id: str, body: PluginListenRequest,
+                          background_tasks: BackgroundTasks) -> CaptureResponse:
+    """Arm a selected local JUCE instance; it waits for DAW playback and uploads its finished WAV internally."""
+    if registry.get(track_id) is None:
+        raise HTTPException(status_code=404, detail="Track is not registered.")
+    if body.minimum_context_seconds > body.max_duration_seconds:
+        raise HTTPException(status_code=422, detail="Minimum context cannot exceed the capture duration limit.")
+    if body.max_duration_seconds > 120:
+        raise HTTPException(status_code=422, detail="JUCE RAM captures are limited to 120 seconds per listen.")
+
+    try:
+        capture = captures.create(track_id, body.minimum_context_seconds, body.max_duration_seconds)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+    if not _reserve_plugin_port(body.plugin_port):
+        captures.fail(capture.capture_id)
+        raise HTTPException(status_code=409, detail="A listen request is already active for that plugin instance.")
+
+    base = "http://127.0.0.1:{}".format(body.plugin_port)
+    try:
+        handshake = json.loads(_plugin_request("POST", base + "/v1/handshake", timeout=2))
+        token = handshake["token"]
+    except Exception as error:
+        captures.fail(capture.capture_id)
+        _release_plugin_port(body.plugin_port)
+        raise HTTPException(status_code=502, detail="Could not handshake with that JUCE plugin instance.") from error
+
+    try:
+        _plugin_request(
+            "POST", base + "/v1/listen", token=token,
+            payload={"match_host_sample_rate": True,
+                     "buffer_duration_seconds": body.max_duration_seconds},
+            timeout=3,
+        )
+        captures.update_plugin_status(capture.capture_id, "waiting_for_playback")
+    except Exception as error:
+        captures.fail(capture.capture_id)
+        _release_plugin_port(body.plugin_port)
+        raise HTTPException(status_code=502, detail="JUCE plugin could not arm the requested capture.") from error
+
+    background_tasks.add_task(
+        _run_plugin_capture, track_id, capture.capture_id, body.plugin_port, token,
+        body.playback_start_timeout_seconds, body.max_duration_seconds,
+    )
     return _capture_response(capture)
 
 

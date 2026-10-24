@@ -1,5 +1,6 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include <juce_audio_formats/juce_audio_formats.h>
 
 namespace
 {
@@ -155,7 +156,8 @@ ErnieAudioProcessor::ErnieAudioProcessor()
       parameters(*this, nullptr, "PARAMETERS", createParameterLayout()),
       metadataWriter(snapshots),
       api([this](const RecordingCommand& command) { return handleApiCommand(command); },
-          [this] { return makeStatus(); })
+          [this] { return makeStatus(); },
+          [this] { return getLastCaptureFile(); })
 {
     gainParameter = parameters.getRawParameterValue("gain");
 
@@ -177,6 +179,19 @@ ErnieAudioProcessor::~ErnieAudioProcessor()
     stopRecording();
     api.shutdown();
     cancelPendingUpdate();
+}
+
+bool ErnieAudioProcessor::isRecording() const noexcept
+{
+    return recorder.isRecording()
+           && (!transportListenArmed.load(std::memory_order_acquire)
+               || transportListenStarted.load(std::memory_order_acquire));
+}
+
+bool ErnieAudioProcessor::isWaitingForPlayback() const noexcept
+{
+    return transportListenArmed.load(std::memory_order_acquire)
+           && !transportListenStarted.load(std::memory_order_acquire);
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout ErnieAudioProcessor::createParameterLayout()
@@ -289,13 +304,42 @@ void ErnieAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::M
     juce::ignoreUnused(midiMessages);
     juce::ScopedNoDenormals noDenormals;
 
-    // Capture the untouched input. Recording never writes this buffer.
-    if (recorder.isRecording())
-        recorder.capture(buffer);
-
     juce::Optional<juce::AudioPlayHead::PositionInfo> position;
     if (auto* playHead = getPlayHead())
         position = playHead->getPosition();
+
+    // A requested listen arms the ring, but only copies audio while the DAW
+    // transport is playing. Stop at the first stopped block after playback.
+    if (transportListenArmed.load(std::memory_order_acquire))
+    {
+        const auto playing = position.hasValue() && (*position).getIsPlaying();
+        if (playing)
+        {
+            transportListenStarted.store(true, std::memory_order_release);
+            recorder.capture(buffer);
+            if (recorder.hasWrapped())
+            {
+                transportListenArmed.store(false, std::memory_order_release);
+                transportListenStarted.store(false, std::memory_order_release);
+                recorder.stop();
+                finalizeListenRequested.store(true, std::memory_order_release);
+                triggerAsyncUpdate();
+            }
+        }
+        else if (transportListenStarted.exchange(false, std::memory_order_acq_rel))
+        {
+            transportListenArmed.store(false, std::memory_order_release);
+            recorder.stop();
+            finalizeListenRequested.store(true, std::memory_order_release);
+            triggerAsyncUpdate();
+        }
+    }
+    else if (recorder.isRecording())
+    {
+        // Manual recording keeps its existing behavior.
+        recorder.capture(buffer);
+    }
+
     publishSnapshot(position.hasValue() ? &(*position) : nullptr);
 
     if (recorder.isRecording())
@@ -424,15 +468,68 @@ void ErnieAudioProcessor::stopRecording()
     if (!recorder.isRecording())
         return;
 
+    transportListenArmed.store(false, std::memory_order_release);
+    transportListenStarted.store(false, std::memory_order_release);
     recorder.stop();
-    metadataWriter.stopWriting();
-
-    {
-        const juce::ScopedLock lock(stateLock);
-        recordingStartedAtMs = 0;
-    }
-
+    finalizeCapture();
     notifyListeners();
+}
+
+void ErnieAudioProcessor::finalizeCapture()
+{
+    metadataWriter.stopWriting();
+    if (transportListenCapture.exchange(false, std::memory_order_acq_rel))
+        writeCaptureWav();
+    const juce::ScopedLock lock(stateLock);
+    recordingStartedAtMs = 0;
+}
+
+void ErnieAudioProcessor::writeCaptureWav()
+{
+    const auto frames = static_cast<int>(juce::jmin<juce::int64>(recorder.getSamplesWritten(), recorder.getCapacity()));
+    const auto channels = juce::jlimit(1, TrackRecorder::maxChannels, recorder.getActiveChannels());
+    const auto sampleRate = recorder.getActiveCaptureRate();
+    if (frames <= 0 || sampleRate <= 0.0)
+        return;
+
+    juce::AudioBuffer<float> audio(channels, frames);
+    float* destinations[TrackRecorder::maxChannels] = { audio.getWritePointer(0), nullptr };
+    if (channels > 1)
+        destinations[1] = audio.getWritePointer(1);
+    if (recorder.copyRecent(destinations, channels, frames) != frames)
+        return;
+
+    const auto directory = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory)
+                               .getChildFile("ernie").getChildFile("captures");
+    if (!directory.createDirectory().wasOk())
+        return;
+
+    const auto session = recorder.getSessionId().isNotEmpty()
+                             ? recorder.getSessionId()
+                             : juce::Uuid().toDashedString();
+    const auto file = directory.getChildFile("capture-" + session + ".wav");
+    std::unique_ptr<juce::OutputStream> stream(file.createOutputStream().release());
+    if (stream == nullptr)
+        return;
+
+    juce::WavAudioFormat wav;
+    auto* writerRaw = wav.createWriterFor(stream.get(), sampleRate, static_cast<unsigned int>(channels), 24, {}, 0);
+    if (writerRaw == nullptr)
+        return;
+    stream.release(); // the writer owns the output stream from here
+    std::unique_ptr<juce::AudioFormatWriter> writer(writerRaw);
+    if (!writer->writeFromAudioSampleBuffer(audio, 0, frames))
+        return;
+    writer.reset(); // closes and flushes the file before it is published
+
+    const juce::ScopedLock lock(stateLock);
+    lastCaptureFile = file;
+}
+
+juce::File ErnieAudioProcessor::getLastCaptureFile() const
+{
+    const juce::ScopedLock lock(stateLock);
+    return lastCaptureFile;
 }
 
 RecordingStatus ErnieAudioProcessor::getRecordingStatus() const
@@ -467,6 +564,11 @@ void ErnieAudioProcessor::removeChangeListener(juce::ChangeListener* listener)
 
 void ErnieAudioProcessor::handleAsyncUpdate()
 {
+    if (finalizeListenRequested.exchange(false, std::memory_order_acq_rel))
+    {
+        finalizeCapture();
+        notifyListeners();
+    }
     changeBroadcaster.sendChangeMessage();
 }
 
@@ -485,7 +587,8 @@ juce::Result ErnieAudioProcessor::handleApiCommand(const RecordingCommand& comma
         return juce::Result::ok();
     }
 
-    if (command.type == RecordingCommand::Type::updateSettings || command.type == RecordingCommand::Type::start)
+    if (command.type == RecordingCommand::Type::updateSettings || command.type == RecordingCommand::Type::start
+        || command.type == RecordingCommand::Type::listen)
     {
         if (command.hasSampleRate || command.hasDuration || command.matchHostSampleRate)
         {
@@ -504,7 +607,46 @@ juce::Result ErnieAudioProcessor::handleApiCommand(const RecordingCommand& comma
     if (command.type == RecordingCommand::Type::start)
     {
         juce::Result result = juce::Result::ok();
-        juce::MessageManager::callSync([this, &result] { result = startRecording(); });
+        juce::MessageManager::callSync([this, &result]
+        {
+            if (recorder.isRecording())
+            {
+                result = juce::Result::fail("A capture is already active on this plugin instance");
+                return;
+            }
+            transportListenCapture.store(false, std::memory_order_release);
+            result = startRecording();
+        });
+        return result;
+    }
+
+    if (command.type == RecordingCommand::Type::listen)
+    {
+        juce::Result result = juce::Result::ok();
+        juce::MessageManager::callSync([this, &result]
+        {
+            if (recorder.isRecording())
+            {
+                result = juce::Result::fail("A capture is already active on this plugin instance");
+                return;
+            }
+            transportListenStarted.store(false, std::memory_order_release);
+            transportListenCapture.store(true, std::memory_order_release);
+            transportListenArmed.store(true, std::memory_order_release);
+            result = startRecording();
+            if (result.wasOk())
+            {
+                {
+                    const juce::ScopedLock lock(stateLock);
+                    lastCaptureFile = {};
+                }
+            }
+            else
+            {
+                transportListenArmed.store(false, std::memory_order_release);
+                transportListenCapture.store(false, std::memory_order_release);
+            }
+        });
         return result;
     }
 
@@ -515,7 +657,11 @@ RecordingStatus ErnieAudioProcessor::makeStatus() const
 {
     const auto settings = recorder.getSettings();
     RecordingStatus status;
-    status.recording = recorder.isRecording();
+    status.recording = recorder.isRecording()
+                       && (!transportListenArmed.load(std::memory_order_acquire)
+                           || transportListenStarted.load(std::memory_order_acquire));
+    status.waitingForPlayback = transportListenArmed.load(std::memory_order_acquire)
+                                && !transportListenStarted.load(std::memory_order_acquire);
     status.matchHostSampleRate = settings.matchHostSampleRate;
     status.captureSampleRate = settings.captureSampleRate;
     status.bufferDurationSeconds = settings.bufferDurationSeconds;
@@ -529,6 +675,7 @@ RecordingStatus ErnieAudioProcessor::makeStatus() const
         const juce::ScopedLock lock(stateLock);
         status.sessionId = activeSessionId;
         status.lastError = lastError;
+        status.captureReady = lastCaptureFile.existsAsFile();
     }
     return status;
 }
@@ -537,7 +684,9 @@ void ErnieAudioProcessor::publishSnapshot(const juce::AudioPlayHead::PositionInf
 {
     SessionSnapshot snapshot;
     snapshot.capturedAtMs = juce::Time::currentTimeMillis();
-    snapshot.recording = recorder.isRecording();
+    snapshot.recording = recorder.isRecording()
+                         && (!transportListenArmed.load(std::memory_order_acquire)
+                             || transportListenStarted.load(std::memory_order_acquire));
     snapshot.hostSampleRate = hostSampleRate.load();
     snapshot.hostBlockSize = hostBlockSize.load();
     snapshot.hostDescription = juce::PluginHostType().getHostDescription();

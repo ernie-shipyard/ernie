@@ -22,6 +22,12 @@ class ListenRequest(BaseModel):
     max_duration_seconds: float = Field(300.0, gt=0.0, le=600.0)
 
 
+class PluginListenRequest(ListenRequest):
+    max_duration_seconds: float = Field(60.0, ge=0.25, le=120.0)
+    plugin_port: int = Field(..., ge=17831, le=17862)
+    playback_start_timeout_seconds: float = Field(120.0, gt=0.0, le=1800.0)
+
+
 class CaptureCommand(BaseModel):
     capture_id: str
     track_id: str
