@@ -19,6 +19,7 @@ function Ernie({ errorMessage, setErrorMessage }) {
   const isSpeaking = connected && mode === "speaking";
 
   const [mouthOpen, setMouthOpen] = useState(false);
+  const [tab, setTab] = useState("studio");
 
   // Animate Ernie's mouth while speaking
   useEffect(() => {
@@ -85,18 +86,6 @@ function Ernie({ errorMessage, setErrorMessage }) {
           />
         </div>
 
-        <h2>
-          {isSpeaking
-            ? "Ernie is talking..."
-            : connected
-            ? "I'm listening, bro."
-            : "Ready to cook something up?"}
-        </h2>
-
-        <p className="subtitle">
-          Your AI music production collaborator
-        </p>
-
         {connected ? (
           <button
             className="stop-button"
@@ -115,12 +104,55 @@ function Ernie({ errorMessage, setErrorMessage }) {
           </button>
         )}
 
-        <p className="hint">Status: {status}</p>
-
         {errorMessage && (
           <p className="error-message">
             Error: {errorMessage}
           </p>
+        )}
+
+        {/* Talk: the conversation view. Studio: the Foldback web UI (Stack etc.) served by the backend */}
+        <div style={{ display: "flex", gap: 10 }}>
+          {[["talk", "Talk"], ["studio", "Studio"]].map(([id, label]) => (
+            <button
+              key={id}
+              onClick={() => setTab(id)}
+              style={{
+                padding: "8px 22px",
+                ...(tab === id
+                  ? {}
+                  : { background: "transparent", color: "var(--primary)", boxShadow: "inset 0 0 0 1px var(--primary)" }),
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {tab === "talk" ? (
+          <>
+            <h2>
+              {isSpeaking
+                ? "Ernie is talking..."
+                : connected
+                ? "I'm listening, bro."
+                : "Ready to cook something up?"}
+            </h2>
+
+            <p className="subtitle">
+              Your AI music production collaborator
+            </p>
+
+            <p className="hint">Status: {status}</p>
+          </>
+        ) : (
+          <div style={{ width: "100%", marginTop: 20 }}>
+            <iframe
+              src="http://127.0.0.1:8000"
+              title="ernie studio"
+              style={{ width: "100%", height: "80vh", border: 0, borderRadius: 12 }}
+              allow="microphone"
+            />
+          </div>
         )}
       </main>
 
