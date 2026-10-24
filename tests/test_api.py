@@ -95,7 +95,12 @@ def test_plugin_listen_orchestrates_juce_capture_and_analysis(client, monkeypatc
         {"session_id": "current", "recording": False, "capture_ready": True,
          "samples_written": 465408},
     ])
-    observed_statuses = []
+    stale_audio = wav_bytes(np.zeros(sample_rate // 5), sample_rate)
+    stale_path = tmp_path / "capture-previous.wav"
+    stale_path.write_bytes(stale_audio)
+    current_path = tmp_path / "capture-current.wav"
+    current_path.write_bytes(payload)
+    resolved_sessions = []
 
     def fake_plugin_request(method, url, token="", payload=None, timeout=2.0):
         if url.endswith("handshake"):
@@ -107,20 +112,15 @@ def test_plugin_listen_orchestrates_juce_capture_and_analysis(client, monkeypatc
             return b'{"ok":true}'
         if url.endswith("/v1/status"):
             payload = next(statuses)
-            observed_statuses.append(payload)
             return json.dumps(payload).encode()
         raise AssertionError("unexpected plugin request: {}".format(url))
 
-    def fake_download(url, token, timeout=30.0):
-        assert len(observed_statuses) == 3, "must wait until the new session stops before downloading its WAV"
-        assert url.endswith("/v1/capture.wav")
-        assert token == "local-test-token"
-        path = tmp_path / "capture.wav"
-        path.write_bytes(payload)
-        return str(path)
+    def fake_capture_path(session_id):
+        resolved_sessions.append(session_id)
+        return tmp_path / "capture-{}.wav".format(session_id)
 
     monkeypatch.setattr("mixengine.main._plugin_request", fake_plugin_request)
-    monkeypatch.setattr("mixengine.main._download_plugin_wav", fake_download)
+    monkeypatch.setattr("mixengine.main._plugin_capture_path", fake_capture_path)
     response = client.post(
         "/tracks/track-a/plugin-listen",
         json={"plugin_port": 17841, "minimum_context_seconds": 0.1,
@@ -131,6 +131,10 @@ def test_plugin_listen_orchestrates_juce_capture_and_analysis(client, monkeypatc
     completed = client.get("/captures/{}".format(capture_id)).json()
     assert completed["status"] == "completed"
     assert completed["measurements"]["channels"] == 1
+    assert completed["measurements"]["duration_seconds"] == pytest.approx(0.5)
+    assert resolved_sessions == ["current"]
+    assert stale_path.exists()
+    assert not current_path.exists()
     assert registry.get("track-a").latest_capture_id == capture_id
 
 

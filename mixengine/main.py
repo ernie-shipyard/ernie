@@ -7,6 +7,7 @@ import threading
 import time
 from dataclasses import replace
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import List
 from urllib.parse import urlsplit
 
@@ -146,30 +147,10 @@ def _plugin_request(method: str, url: str, token: str = "", payload=None, timeou
         return response.read()
 
 
-def _download_plugin_wav(url: str, token: str, timeout: float = 30.0) -> str:
-    """Stream the plugin's WAV to a temporary file instead of holding audio in RAM."""
-    request = UrlRequest(url, headers={"X-Ernie-Token": token}, method="GET")
-    path = None
-    size = 0
-    try:
-        with urlopen(request, timeout=timeout) as response:
-            with tempfile.NamedTemporaryFile(prefix="ernie-plugin-", suffix=".wav", delete=False) as cached:
-                path = cached.name
-                while True:
-                    chunk = response.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    size += len(chunk)
-                    if size > MAX_AUDIO_BYTES:
-                        raise ValueError("Plugin WAV exceeds the 512 MiB analysis limit.")
-                    cached.write(chunk)
-        if size == 0:
-            raise ValueError("Plugin returned an empty WAV file.")
-        return path
-    except Exception:
-        if path is not None and os.path.exists(path):
-            os.unlink(path)
-        raise
+def _plugin_capture_path(session_id: str) -> Path:
+    """Resolve the exact WAV cache written by this JUCE session on this machine."""
+    return (Path.home() / "Documents" / "ernie" / "captures"
+            / "capture-{}.wav".format(session_id))
 
 
 def _reserve_plugin_port(port: int) -> bool:
@@ -304,13 +285,16 @@ def _run_plugin_capture(track_id: str, capture_id: str, port: int, token: str,
             if (is_new_session and not status_payload.get("recording")
                     and status_payload.get("capture_ready")
                     and status_payload.get("samples_written", 0) > 0):
+                session_id = status_payload["session_id"]
+                cached_path = _plugin_capture_path(session_id)
+                if not cached_path.is_file():
+                    time.sleep(0.25)
+                    continue
                 captures.begin_processing(capture_id)
-                cached_path = _download_plugin_wav(base + "/v1/capture.wav", token, timeout=30)
                 try:
-                    measurements = _analyze_cached_wav(cached_path, max_duration)
+                    measurements = _analyze_cached_wav(str(cached_path), max_duration)
                 finally:
-                    if os.path.exists(cached_path):
-                        os.unlink(cached_path)
+                    cached_path.unlink(missing_ok=True)
                 captures.complete(capture_id, measurements)
                 registry.update_measurements(track_id, measurements, capture_id=capture_id)
                 return

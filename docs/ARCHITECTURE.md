@@ -41,7 +41,7 @@ Content-Type: application/json
 {"plugin_port":17831,"minimum_context_seconds":10,"max_duration_seconds":60}
 ```
 
-The service handshakes with the plugin, issues `POST /v1/listen`, and returns `202` with `capture_id`. The plugin waits for DAW transport playback before copying audio into its fixed RAM ring. It stops when transport stops or the ring reaches the requested maximum, writes a WAV cache file off the audio thread, then makes it available at authenticated `GET /v1/capture.wav`. The service downloads and analyzes the WAV; poll `GET /captures/{capture_id}` until completed or `context_too_short`.
+The service handshakes with the plugin, issues `POST /v1/listen`, and returns `202` with `capture_id`. The plugin waits for DAW transport playback before copying audio into its fixed RAM ring. It stops when transport stops or the ring reaches the requested maximum, then writes a WAV cache file named for that session off the audio thread. The service waits for that session to stop, opens its exact cache file, analyzes it, and removes it; poll `GET /captures/{capture_id}` until completed or `context_too_short`.
 
 Direct plugin API:
 
