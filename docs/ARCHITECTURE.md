@@ -12,7 +12,7 @@ FastAPI (app.py)
 JUCE instance on 127.0.0.1:17831–17862
    │ bounded RAM capture gated by DAW transport
    ▼
-WAV cache → mixengine DSP → ranked measured suggestions
+WAV cache → mixengine DSP → per-capture notes and ranked mix suggestions
 ```
 
 Foldback also provides Ableton session context (`foldback/live.py`), structural and bounce notes (`foldback/advise.py`), speech/LLM phrasing (`foldback/persona.py`), hum-to-MIDI (`foldback/hum2midi.py`), and sample matching (`foldback/samples.py`). ElevenLabs speech/music routes are in `app.py`.
@@ -41,7 +41,7 @@ Content-Type: application/json
 {"plugin_port":17831,"minimum_context_seconds":10,"max_duration_seconds":60}
 ```
 
-The service handshakes with the plugin, issues `POST /v1/listen`, and returns `202` with `capture_id`. The plugin waits for DAW transport playback before copying audio into its fixed RAM ring. It stops when transport stops or the ring reaches the requested maximum, then writes a WAV cache file named for that session off the audio thread. The service waits for that session to stop, opens its exact cache file, analyzes it, and removes it; poll `GET /captures/{capture_id}` until completed or `context_too_short`.
+The service handshakes with the plugin, issues `POST /v1/listen`, and returns `202` with `capture_id`. The plugin waits for DAW transport playback before copying audio into its fixed RAM ring. It stops when transport stops or the ring reaches the requested maximum, then writes a WAV cache file named for that session off the audio thread. The service waits for that session to stop, opens its exact cache file, measures it, stores mixing notes on the capture, and removes the file. Poll `GET /captures/{capture_id}` until `completed` or `context_too_short`; a completed capture includes `recommendations`. `POST /mix/analyze` ranks the current window. `POST /advise/captures` turns those notes into the spoken assistant format without requiring Ableton.
 
 Direct plugin API:
 

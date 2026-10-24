@@ -21,7 +21,7 @@ The analysis API is implemented in `mixengine/` and is served alongside the Fold
 1. `POST /tracks/register` with `{"instance_id":"lead-vocal","name":"Lead","role":"vocal"}` to create the analysis track.
 2. Select the plugin's loopback port shown in its editor, then call `POST /tracks/{id}/plugin-listen` with `{"plugin_port":17831,"minimum_context_seconds":10,"max_duration_seconds":60}`.
 3. The service handshakes with that specific plugin, arms capture, and returns `202` with a capture ID. The plugin waits for DAW playback, records until transport stops or its configured duration is reached, and writes a WAV cache file.
-4. The service detects completion, opens the WAV cache file named for that exact plugin session, runs DSP, and removes the temporary cache after analysis. `GET /captures/{capture_id}` reports status/context length. `GET /tracks` returns latest measurements and staleness. `POST /mix/analyze` returns ranked suggestions with measured evidence.
+4. The service detects completion, opens the WAV cache file named for that exact plugin session, runs DSP, stores mixing notes on the capture, and removes the temporary cache. `GET /captures/{capture_id}` reports status, measurements, and the mixing notes for that listen. `GET /tracks` returns latest measurements and staleness. `POST /mix/analyze` ranks those notes across the current window, including level, crest factor on transient roles, polarity, and relative band balance. A bright capture on its own is not treated as an EQ problem.
 
 The direct plugin endpoints are also available after `POST /v1/handshake`: authenticated `POST /v1/listen`, `GET /v1/status`, and `GET /v1/capture.wav`. The FastAPI bridge polls the plugin and handles the WAV upload/analysis path automatically. Plugin listen duration is capped at 120 seconds by its RAM ring; playback start timeout defaults to 120 seconds and can be set with `playback_start_timeout_seconds`.
 
@@ -35,7 +35,7 @@ The plugin retains manual `/v1/recording/start` and `/v1/recording/stop` control
 
 ## Other features
 
-Foldback routes provide Ableton session context, structural/spectral mix notes, speech interaction, hum-to-MIDI, sample matching, and music composition through ElevenLabs. Set `FOLDBACK_MOCK=1` to use `foldback/session.mock.json` without Ableton. See `docs/ARCHITECTURE.md` for component ownership and route details.
+Foldback routes provide Ableton session context, structural/spectral mix notes, speech interaction, hum-to-MIDI, sample matching, and music composition through ElevenLabs. Finished plugin listens are included: `POST /advise` adds their notes to the session notes, `POST /advise/captures` speaks them without Ableton, and `/tools/track_analysis/{label}` reads a plugin capture by track id, name, or role. Set `FOLDBACK_MOCK=1` to use `foldback/session.mock.json` without Ableton. See `docs/ARCHITECTURE.md` for component ownership and route details.
 
 ## Tests
 
