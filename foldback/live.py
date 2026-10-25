@@ -58,7 +58,9 @@ class AbletonOSC:
         self.client = SimpleUDPClient(host, send_port)
         self.timeout = timeout
         self._waiting = {}
+        self._batches = {}                  # addr -> {"want": set of arg prefixes, "got": {prefix: args}, "event"}
         self._lock = threading.Lock()
+        self._query_lock = threading.Lock()  # replies are matched by address, so one query at a time
         disp = Dispatcher()
         disp.set_default_handler(self._on_msg)
         self.server = ThreadingOSCUDPServer((host, recv_port), disp)
@@ -67,48 +69,97 @@ class AbletonOSC:
     def _on_msg(self, addr, *args):
         with self._lock:
             ev = self._waiting.get(addr)
+            batch = self._batches.get(addr)
+            if batch is not None:
+                for key in batch["want"]:
+                    if tuple(args[:len(key)]) == key:
+                        batch["got"][key] = args
+                        if len(batch["got"]) == len(batch["want"]):
+                            batch["event"].set()
+                        break
         if ev:
             ev["args"] = args; ev["event"].set()
 
     def query(self, addr, *args):
-        ev = {"event": threading.Event(), "args": None}
-        with self._lock:
-            self._waiting[addr] = ev
-        self.client.send_message(addr, list(args))
-        if not ev["event"].wait(self.timeout):
-            raise TimeoutError(f"AbletonOSC didn't answer {addr} — is Live open with the control surface enabled?")
-        return ev["args"]
+        with self._query_lock:
+            ev = {"event": threading.Event(), "args": None}
+            with self._lock:
+                self._waiting[addr] = ev
+            self.client.send_message(addr, list(args))
+            ok = ev["event"].wait(self.timeout)
+            with self._lock:
+                self._waiting.pop(addr, None)
+            if not ok:
+                raise TimeoutError(f"AbletonOSC didn't answer {addr} — is Live open with the control surface enabled?")
+            return ev["args"]
+
+    def query_many(self, addr, arg_lists, timeout=10.0):
+        """Send every query at once and match replies by their leading args (e.g. track index).
+        AbletonOSC drains its whole socket each Live tick, so N queries cost a few ticks instead of N."""
+        keys = [tuple(a) for a in arg_lists]
+        if not keys:
+            return {}
+        with self._query_lock:
+            batch = {"want": set(keys), "got": {}, "event": threading.Event()}
+            with self._lock:
+                self._batches[addr] = batch
+            for key in keys:
+                self.client.send_message(addr, list(key))
+            batch["event"].wait(timeout)
+            with self._lock:
+                self._batches.pop(addr, None)
+            return batch["got"]      # missing keys simply aren't there
 
     def send(self, addr, *args):
         self.client.send_message(addr, list(args))
 
 
+_osc = None
+_osc_lock = threading.Lock()
+
+
+def osc_client() -> AbletonOSC:
+    """One client per process: each AbletonOSC() binds the reply port 11001, so a second one would fail to bind."""
+    global _osc
+    with _osc_lock:
+        if _osc is None:
+            _osc = AbletonOSC()
+        return _osc
+
+
 def read_live_session() -> Session:
-    osc = AbletonOSC()
+    """Bulk reads (AbletonOSC /live/song/get/track_data) plus pipelined per-track queries: a 50-track set reads in
+    about a second instead of minutes of one-property-per-tick round trips."""
+    osc = osc_client()
     tempo = osc.query("/live/song/get/tempo")[0]
-    n = osc.query("/live/song/get/num_tracks")[0]
+    n = int(osc.query("/live/song/get/num_tracks")[0])
+    if n == 0:
+        return Session(tempo=tempo, tracks=[])
+    scenes = int(osc.query("/live/song/get/num_scenes")[0])
+
+    FIELDS = ("track.name", "track.has_midi_input", "track.mute", "track.solo", "track.num_devices")
+    flat = osc.query("/live/song/get/track_data", 0, n, *FIELDS)
+    rows = [flat[i * len(FIELDS):(i + 1) * len(FIELDS)] for i in range(n)]
+
+    dev_flat = list(osc.query("/live/song/get/track_data", 0, n, "device.name")) if any(r[4] for r in rows) else []
+    devices, at = [], 0
+    for r in rows:
+        devices.append(dev_flat[at:at + int(r[4])]); at += int(r[4])
+
+    clip_flat = list(osc.query("/live/song/get/track_data", 0, n, "clip.name")) if scenes else []
+    clip_names = [clip_flat[i * scenes:(i + 1) * scenes] for i in range(n)]
+
+    vols = osc.query_many("/live/track/get/volume", [(i,) for i in range(n)])
+    pans = osc.query_many("/live/track/get/panning", [(i,) for i in range(n)])
+    audio_clips = [(i, ci) for i in range(n) if not rows[i][1] for ci, c in enumerate(clip_names[i]) if c]
+    paths = osc.query_many("/live/clip/get/file_path", audio_clips)
+
     tracks = []
-    for i in range(n):
-        name = osc.query("/live/track/get/name", i)[1]
-        vol = osc.query("/live/track/get/volume", i)[1]
-        pan = osc.query("/live/track/get/panning", i)[1]
-        mute = bool(osc.query("/live/track/get/mute", i)[1])
-        solo = bool(osc.query("/live/track/get/solo", i)[1])
-        devs = list(osc.query("/live/track/get/devices/name", i)[1:])
-        has_midi = bool(osc.query("/live/track/get/has_midi_input", i)[1])
-        clips = []
-        try:
-            names = osc.query("/live/track/get/clips/name", i)[1:]
-            for ci, cname in enumerate(names):
-                if cname:
-                    fp = ""
-                    if not has_midi:
-                        try: fp = osc.query("/live/clip/get/file_path", i, ci)[2]
-                        except Exception: pass
-                    clips.append({"slot": ci, "name": cname, "file_path": fp})
-        except Exception:
-            pass
-        tracks.append(Track(i, name, vol, pan, mute, solo, False, devs, clips, has_midi))
+    for i, (name, has_midi, mute, solo, _) in enumerate(rows):
+        clips = [{"slot": ci, "name": c, "file_path": (paths.get((i, ci)) or (None, None, ""))[2] or ""}
+                 for ci, c in enumerate(clip_names[i]) if c]
+        tracks.append(Track(i, name, (vols.get((i,)) or (i, 0.85))[1], (pans.get((i,)) or (i, 0.0))[1],
+                            bool(mute), bool(solo), False, devices[i], clips, bool(has_midi)))
     return Session(tempo=tempo, tracks=tracks)
 
 
@@ -124,7 +175,7 @@ def read_session() -> Session:
 
 def create_midi_track(name="foldback"):
     if MOCK: return {"mock": True, "track": name}
-    osc = AbletonOSC()
+    osc = osc_client()
     osc.send("/live/song/create_midi_track", -1)
     n = osc.query("/live/song/get/num_tracks")[0]
     osc.send("/live/track/set/name", n - 1, name)
@@ -133,7 +184,7 @@ def create_midi_track(name="foldback"):
 
 def create_audio_track(name="foldback audio"):
     if MOCK: return {"mock": True, "track": name}
-    osc = AbletonOSC()
+    osc = osc_client()
     osc.send("/live/song/create_audio_track", -1)
     n = osc.query("/live/song/get/num_tracks")[0]
     osc.send("/live/track/set/name", n - 1, name)
@@ -142,5 +193,5 @@ def create_audio_track(name="foldback audio"):
 
 def set_tempo(bpm: float):
     if MOCK: return {"mock": True, "tempo": bpm}
-    AbletonOSC().send("/live/song/set/tempo", float(bpm))
+    osc_client().send("/live/song/set/tempo", float(bpm))
     return {"tempo": bpm}

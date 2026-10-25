@@ -62,6 +62,13 @@ class Measurements(BaseModel):
     crest_factor_db: Optional[float]
     frequency_bands: Dict[str, BandEnergy]
     stereo_correlation: Optional[float]
+    # Full-mix measurements, compared against a reference profile (mixengine/reference_edm.json).
+    octave_bands_db: Dict[str, float] = Field(default_factory=dict)   # mid-channel power per octave, dB
+    loudness_lufs: Optional[float] = None                             # BS.1770 integrated, gated
+    side_to_mid_db: Optional[float] = None                            # stereo width
+    low_side_to_mid_db: Optional[float] = None                        # width below 120 Hz
+    low_end_correlation: Optional[float] = None                       # L/R correlation below 120 Hz
+    low_end_punch_db: Optional[float] = None                          # 95th vs median level of the <120 Hz envelope
 
 
 class Recommendation(BaseModel):

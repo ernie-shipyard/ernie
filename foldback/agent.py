@@ -19,6 +19,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel, Field
 
 from mixengine import main as mix
+from mixengine.feedback import REFERENCE, tonal_balance
 
 router = APIRouter(prefix="/agent", tags=["agent"])
 
@@ -120,10 +121,18 @@ def listen(body: AgentListen, background_tasks: BackgroundTasks):
 def _summary(m) -> dict:
     """The few numbers worth saying out loud; the full measurement stays in /captures/{id}."""
     r = lambda v, n=1: None if v is None else round(v, n)
-    return {"duration_seconds": r(m.duration_seconds), "peak_dbfs": r(m.peak_dbfs), "rms_dbfs": r(m.rms_dbfs),
-            "crest_factor_db": r(m.crest_factor_db), "stereo_correlation": r(m.stereo_correlation, 2),
-            "is_silent": m.is_silent,
-            "bands_dbfs": {k: r(b.energy_dbfs) for k, b in m.frequency_bands.items()}}
+    out = {"duration_seconds": r(m.duration_seconds), "peak_dbfs": r(m.peak_dbfs), "rms_dbfs": r(m.rms_dbfs),
+           "loudness_lufs": r(m.loudness_lufs), "crest_factor_db": r(m.crest_factor_db),
+           "stereo_correlation": r(m.stereo_correlation, 2), "low_end_correlation": r(m.low_end_correlation, 2),
+           "width_side_to_mid_db": r(m.side_to_mid_db), "is_silent": m.is_silent}
+    balance = tonal_balance(m)
+    if balance:
+        # what Ernie can answer "is my low end too loud?" from: dB vs. the typical reference, and how unusual that is
+        out["tonal_balance_vs_references"] = {
+            n: {"range": b["range"], "vs_typical_db": b["vs_typical_db"], "verdict": b["verdict"]}
+            for n, b in balance.items()}
+        out["reference"] = "{} {} tracks".format(REFERENCE.get("source_tracks"), REFERENCE.get("genre"))
+    return out
 
 
 @router.get("/listen/{capture_id}")
@@ -132,7 +141,7 @@ def listen_status(capture_id: str):
     out = {"capture_id": capture_id, "status": capture.status, "phase": PHASES.get(capture.status, capture.status),
            "done": capture.status in DONE}
     if capture.status in DONE and capture.measurements is not None:
-        notes = [{"priority": n.priority, "message": n.message, "fix": n.fix or n.reasoning}
+        notes = [{"priority": n.priority, "message": n.message, "why": n.reasoning, "fix": n.fix}
                  for n in capture.recommendations]
         out["measurements"] = _summary(capture.measurements)
         out["notes"] = notes
@@ -141,7 +150,8 @@ def listen_status(capture_id: str):
         elif capture.status == "context_too_short":
             out["verdict"] = "too_short"
         else:
-            out["verdict"] = "has_notes" if notes else "clean"
+            # low-priority notes are comparisons and nitpicks; only medium/high ones mean "fix this"
+            out["verdict"] = "has_notes" if any(n["priority"] in ("high", "medium") for n in notes) else "clean"
     return out
 
 

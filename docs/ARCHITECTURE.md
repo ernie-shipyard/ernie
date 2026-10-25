@@ -48,6 +48,25 @@ The root FastAPI service hosts the Foldback product routes and the independent `
 
 Foldback also provides Ableton session context (`foldback/live.py`), structural and bounce notes (`foldback/advise.py`), speech/LLM phrasing (`foldback/persona.py`), hum-to-MIDI (`foldback/hum2midi.py`), and sample matching (`foldback/samples.py`). ElevenLabs speech/music routes are in `app.py`.
 
+## Full-mix feedback against reference tracks
+
+A capture on a full-mix role (`master`, `mix`, `bus`) is compared with a reference profile built from finished
+tracks: `python scripts/calibrate_reference.py "<folder>" --genre edm` cuts each track into 15 s windows, keeps the
+main sections, runs the capture DSP on them and writes `mixengine/reference_edm.json` (`ERNIE_REFERENCE` picks
+another genre file). Measured per capture: power per octave in 9 named bands, BS.1770 loudness, width (side/mid),
+low-end correlation and side energy under 120 Hz, and low-end punch.
+
+- A band beyond the references' 2.5–97.5% range (each band judged against the level of the bands that aren't its
+  neighbours, so a broad boost can't hide itself) is a medium/high note with a source-level fix.
+- A band outside their middle half and 3 dB or more from the typical reference is a low-priority "leans" note.
+- Louder than the loudest references, a stereo low end, a wider-than-reference image and a low end that doesn't
+  move between hits are notes; a quiet pre-master and a peak at the limiter ceiling are not.
+
+Validated on the EDM folder: about 1 in 8 held-out reference drops get a medium/high tonal note; a reference drop
+with one known problem gets the matching note for stereo sub and over-limiting 25/25, weak low end 24/25,
+sibilance 23/25, nasal 22/25, harsh 21/25, boomy 20/25, dark 17/25, boxy 15/25 and mud 11/25. Mud is the weak
+spot because the references themselves span about −6..+8 dB at 250–500 Hz.
+
 ## One-shot capture contract
 
 Register a logical analysis track:

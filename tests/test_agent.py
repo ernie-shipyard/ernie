@@ -53,6 +53,8 @@ def test_listen_registers_master_finds_plugin_and_reports_clean_verdict(client, 
     fake_plugin(monkeypatch, tmp_path, np.stack([audio, right.astype(np.float32)], axis=1), sample_rate)
     # the first status probe belongs to discovery, so skip the scripted session sequence for it
     monkeypatch.setattr("foldback.agent.plugin_ports", lambda: [17833])
+    # a sine is nothing like an EDM master; this test is about the listen wiring, not the reference comparison
+    monkeypatch.setattr("mixengine.feedback.REFERENCE", None)
 
     started = client.post("/agent/listen", json={"max_seconds": 5})
     assert started.status_code == 202
