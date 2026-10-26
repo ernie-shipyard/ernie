@@ -97,7 +97,18 @@ function HumCard({ card }) {
   );
 }
 
-const CARDS = { listen: ListenCard, audio: AudioCard, samples: SamplesCard, hum: HumCard };
+function LibraryCard({ card }) {
+  const tags = Object.entries(card.tags || {}).filter(([, n]) => n);
+  return (
+    <div className="card">
+      <div className="card-title">Sample library: {card.count} samples</div>
+      <div className="card-sub">{card.dirs.join(" · ")}</div>
+      {tags.length > 0 && <div className="strip">{tags.map(([t, n]) => <span key={t}>{n} {t}</span>)}</div>}
+    </div>
+  );
+}
+
+const CARDS = { listen: ListenCard, audio: AudioCard, samples: SamplesCard, hum: HumCard, library: LibraryCard };
 
 export default function Chat({ messages, connected, onSend }) {
   const [draft, setDraft] = useState("");

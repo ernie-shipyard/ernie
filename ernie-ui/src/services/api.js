@@ -43,6 +43,7 @@ export const api = {
   pickSamples: ({ tag, key, bpm }) =>
     request(`/samples/pick?${new URLSearchParams({ tag, key: key || "", ...(bpm ? { bpm } : {}) })}`),
   sampleUrl: (path) => `/sample/file?${new URLSearchParams({ path })}`,
+  setSampleDirs: (dirs) => json("/samples/dirs", { dirs }),
 
   humToMidi: ({ blob, bpm, bars, countIn, trackName }) =>
     form("/midi/hum", {

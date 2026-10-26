@@ -6,6 +6,7 @@ __pycache__/
 .venv/
 *.mp3
 foldback/.sample_index.json
+foldback/.settings.json
 foldback/.sample_features.json
 plugin/Builds/
 build/

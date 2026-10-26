@@ -68,7 +68,7 @@ The API key stays in the root `.env`; the UI gets a signed conversation URL from
 | Calibration / beatbox | — | in progress |
 | Agent voice + client tools (listen, generate, samples, hum, session) | human (connect, generate); machine (listen flow vs fake plugin) | working |
 | Electron dev window | human | working |
-| Electron packaged `.app` | — | not done (`npm start` runs the production build) |
+| Electron packaged `.app` | human | working on the build machine (`cd ernie-ui && npm run dist:mac` → `release/mac-arm64/Ernie.app`; runs the backend from this repo's `.venv` and `.env`) |
 
 ### ElevenLabs usage
 
@@ -104,7 +104,8 @@ Put the ERNIE plugin on the master bus. Click **Talk to Ernie**, then for exampl
 
 - "Give me some mixing feedback": Ernie says "I'm listening, run the track", arms the plugin; press play. When the capture finishes it reads the measured notes back, or tells you to keep cooking if there's nothing to fix.
 - "Make me a warm pad in A minor at 120": generates an 8 s loop (drums/FX: a one-shot) and posts a player in the chat.
-- "Find me a bass sample": ranks your `SAMPLE_DIRS` library by tempo then key.
+- "Find me a bass sample": ranks your sample library by tempo then key. Set the library by asking Ernie or
+  clicking the samples chip in the header (pick several folders at once); `SAMPLE_DIRS` in `.env` is the fallback.
 - "Let me hum a bass line": plays a count-in, records, and returns a `.mid` (and a new MIDI track in Live).
 
 The header chips show whether the backend is up, which port the plugin answered on, and the agent connection. You can type to Ernie in the chat box too.

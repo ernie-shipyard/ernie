@@ -3,6 +3,7 @@ import { useConversationClientTool, useConversationControls, useConversationInpu
 
 import { api } from "../services/api.js";
 import { keyRoot, recordWithClick, refTone } from "../services/audio.js";
+import { chooseLibrary } from "../services/library.js";
 
 // Client tools the ElevenLabs agent calls. Names and parameters must match scripts/setup_agent.py.
 // Each handler does the work against the local backend, posts a card to the chat, and returns a short
@@ -111,6 +112,20 @@ export function useErnieTools({ addCard, updateCard, modeRef }) {
         found: out.candidates.length,
         top: out.candidates.slice(0, 3).map((c) => ({ name: c.name, key: c.key, bpm: c.bpm, tempo: c.tempo })),
       });
+    } catch (e) {
+      if (/No sample folders/.test(e.message)) {
+        return "No sample library is set yet. Offer to set it up with choose_sample_folders, or to generate one.";
+      }
+      return `error: ${e.message}`;
+    }
+  });
+
+  useConversationClientTool("choose_sample_folders", async () => {
+    try {
+      const out = await chooseLibrary();
+      if (!out) return "The producer closed the folder picker without choosing anything.";
+      addCard({ type: "library", ...out });
+      return say({ folders: out.dirs.length, samples: out.count, by_type: out.tags });
     } catch (e) {
       return `error: ${e.message}`;
     }

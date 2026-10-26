@@ -35,6 +35,7 @@ What you can do (always through your tools, never pretend):
 - Mix feedback: start_listening, then wait for the results message.
 - Make sounds: generate_sound for a one-shot or an 8-second loop for a layer.
 - Find samples from the producer's library: find_samples.
+- Set up the sample library: choose_sample_folders opens a folder picker (they can pick several folders).
 - Hum to MIDI: record_hum.
 - Read the Ableton session (tracks, tempo, devices, samples): get_session.
 
@@ -62,6 +63,10 @@ Mix feedback flow, follow it exactly:
 Generating: pick the layer (drums, bass, pad, synth, fx, vocals) and pass a short description. Pass key and bpm
 when the producer said them or the session has them. Generation takes up to 40 seconds; say something brief like
 "cooking that up" before calling. When it returns, tell them it's in the chat to preview.
+
+Sample library: if no library is set (a [setup] update or find_samples says so), offer once to set it up. When they
+agree, say something like "pick your sample folders, you can grab a few" and call choose_sample_folders. When it
+returns, tell them how many samples you found. A [library] update means they changed it themselves.
 
 Hum to MIDI: before record_hum say something like "Four clicks count you in, start humming right after the fourth."
 The tool plays a 4-beat count-in, records and returns notes. When live_track_created is true the take is already a
@@ -127,6 +132,14 @@ TOOLS = [
             "bpm": {"type": "number", "description": "Tempo to match. 0 if unknown."},
         }},
         "response_timeout_secs": 30,
+    },
+    {
+        "name": "choose_sample_folders",
+        "description": "Open a folder picker so the producer can choose one or more sample library folders, then "
+                       "scan them. Returns how many samples were found, by type.",
+        "parameters": {"type": "object", "required": [], "properties": {}},
+        "response_timeout_secs": 120,   # ElevenLabs' max
+        "pre_tool_speech": "force",
     },
     {
         "name": "record_hum",

@@ -12,6 +12,7 @@ import Avatar from "./components/Avatar.jsx";
 import Chat from "./components/Chat.jsx";
 import { CAPTURE_PREFIX, IDLE_PREFIX, useErnieTools } from "./hooks/useErnieTools.js";
 import { api } from "./services/api.js";
+import { chooseLibrary } from "./services/library.js";
 
 import "./App.css";
 
@@ -26,18 +27,20 @@ const newId = () => ++nextId;
 
 function useBackendStatus() {
   const [backend, setBackend] = useState(null); // null = unknown, false = down, object = /agent/status
+  const refresh = useRef(null);
   useEffect(() => {
     let alive = true;
     const check = () =>
       api.status().then((s) => alive && setBackend(s)).catch(() => alive && setBackend(false));
     check();
     const timer = setInterval(check, STATUS_POLL_MS);
+    refresh.current = check;
     return () => {
       alive = false;
       clearInterval(timer);
     };
   }, []);
-  return backend;
+  return [backend, () => refresh.current?.()];
 }
 
 function Chip({ ok, children }) {
@@ -49,7 +52,7 @@ function Ernie({ chat, errorMessage, setErrorMessage }) {
   const { isMuted, setMuted } = useConversationInput();
   const { status } = useConversationStatus();
   const { mode } = useConversationMode();
-  const backend = useBackendStatus();
+  const [backend, refreshBackend] = useBackendStatus();
   const [tab, setTab] = useState("talk");
 
   const connected = status === "connected";
@@ -73,6 +76,33 @@ function Ernie({ chat, errorMessage, setErrorMessage }) {
     }, IDLE_MS);
     return () => clearTimeout(timer);
   }, [idleArmed, chat.messages.length, chat.userTurns, sendUserMessage]);
+
+  // No library yet: Ernie offers to set one up, once per conversation.
+  const libraryKnown = backend ? backend.sample_dirs?.length > 0 : null;
+  useEffect(() => {
+    if (connected && libraryKnown === false) {
+      sendContextualUpdate(
+        "[setup] The producer hasn't chosen any sample library folders yet. Early on, offer once to set them up " +
+          "with choose_sample_folders (they can pick several folders).",
+      );
+    }
+  }, [connected]); // eslint-disable-line react-hooks/exhaustive-deps -- once per connection, not per poll
+
+  async function handleLibrary() {
+    setErrorMessage("");
+    try {
+      const out = await chooseLibrary();
+      if (!out) return;
+      chat.addCard({ type: "library", ...out });
+      refreshBackend();
+      if (connected) {
+        sendContextualUpdate(`[library] The producer set their sample library: ${out.count} samples in ` +
+          `${out.dirs.length} folder(s).`);
+      }
+    } catch (error) {
+      setErrorMessage(error.message);
+    }
+  }
 
   function toggleMute() {
     const muted = !isMuted;
@@ -137,6 +167,11 @@ function Ernie({ chat, errorMessage, setErrorMessage }) {
           <Chip ok={backend ? plugins.length > 0 : null}>
             {plugins.length ? `plugin :${plugins[0]}` : "no plugin"}
           </Chip>
+          <button className={`chip chip-button ${libraryKnown ? "ok" : ""}`} onClick={handleLibrary}
+            title={libraryKnown ? backend.sample_dirs.join("\n") : "Choose your sample library folders"}>
+            {libraryKnown ? `samples: ${backend.sample_dirs.length} folder${backend.sample_dirs.length > 1 ? "s" : ""}`
+              : "set sample library"}
+          </button>
           <Chip ok={connected ? true : status === "error" ? false : null}>{status}</Chip>
         </div>
       </header>

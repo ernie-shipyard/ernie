@@ -28,6 +28,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from elevenlabs.client import ElevenLabs
 from fastapi.routing import APIRoute
+from pydantic import BaseModel
 
 from foldback import live, advise, persona, hum2midi, samples, agent
 from mixengine.feedback import build_recommendations
@@ -466,7 +467,7 @@ async def midi_beatbox(audio: UploadFile = File(...), add_track: bool = Form(Tru
     notes, length = info.pop("_notes"), info.pop("_length")
     track = _live_track("foldback drums", notes, length) if add_track else None
     onsets, types, y = info.pop("_onsets"), info.pop("_types"), info.pop("_y")
-    matches = samples.match_hits(y, onsets, types, samples.index()) if os.getenv("SAMPLE_DIRS") else {}
+    matches = samples.match_hits(y, onsets, types, samples.index()) if samples.library_dirs() else {}
     picks = ", ".join(f"{k}: {v[0]['name']}" for k, v in matches.items() if v)
     return {"midi": f"/midi/{mid_id}", "info": info, "track": track, "samples": matches,
             "say": f"{info['hits']} hits: {info['kick']} kicks, {info['snare']} snares, {info['hat']} hats at {info['tempo']} bpm. "
@@ -507,6 +508,26 @@ async def calibrate_step(kind: str, audio: UploadFile = File(...), bpm: float = 
 def samples_scan(force: bool = Form(False)):
     idx = samples.index(force=force)
     return {k: v for k, v in idx.items() if k != "items"} | {"sample_names": [i["name"] for i in idx.get("items", [])][:200]}
+
+
+class SampleDirs(BaseModel):
+    dirs: list[str]
+
+
+@app.get("/samples/dirs")
+def samples_dirs():
+    return {"dirs": samples.library_dirs()}
+
+
+@app.post("/samples/dirs")
+def samples_set_dirs(body: SampleDirs):
+    """Folders chosen in the app (Ernie's folder picker). Saves them, then rescans the library."""
+    try:
+        dirs = samples.set_library_dirs(body.dirs)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    idx = samples.index(force=True) if dirs else {"count": 0, "tags": {}}
+    return {"dirs": dirs, "count": idx.get("count", 0), "tags": idx.get("tags", {})}
 
 
 @app.post("/samples/match")

@@ -22,3 +22,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# packaged app (npm run dist:mac)
+release
+electron/repo.json

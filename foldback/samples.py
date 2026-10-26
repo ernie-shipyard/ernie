@@ -23,6 +23,7 @@ import librosa
 SR = 22050
 AUDIO_EXT = {".wav", ".aif", ".aiff", ".flac", ".mp3", ".ogg", ".m4a"}
 CACHE = os.path.join(os.path.dirname(__file__), ".sample_index.json")
+SETTINGS = os.path.join(os.path.dirname(__file__), ".settings.json")   # folders chosen in the app
 FEAT_KEYS = ["dur", "centroid", "low", "mid", "high", "attack", "zcr"]
 TAGS = ["kick", "snare", "hat", "perc", "bass", "pad", "synth", "vocal", "fx", "loop", "other"]
 
@@ -220,6 +221,32 @@ def _walk(dirs):
                     yield os.path.join(root, fn)
 
 
+def library_dirs():
+    """The producer's sample folders: the ones chosen in the app, else SAMPLE_DIRS from .env."""
+    try:
+        dirs = json.load(open(SETTINGS)).get("sample_dirs")
+        if dirs is not None:
+            return dirs
+    except (OSError, ValueError):
+        pass
+    return [d for d in os.getenv("SAMPLE_DIRS", "").split(":") if d]
+
+
+def set_library_dirs(dirs):
+    """Save the folders chosen in the app (they override SAMPLE_DIRS). Missing folders are an error, not dropped."""
+    dirs = list(dict.fromkeys(os.path.abspath(os.path.expanduser(d)) for d in dirs if d.strip()))
+    missing = [d for d in dirs if not os.path.isdir(d)]
+    if missing:
+        raise ValueError(f"Not a folder: {', '.join(missing)}")
+    try:
+        settings = json.load(open(SETTINGS))
+    except (OSError, ValueError):
+        settings = {}
+    settings["sample_dirs"] = dirs
+    json.dump(settings, open(SETTINGS, "w"), indent=2)
+    return dirs
+
+
 INDEX_VERSION = 2          # bump when the item shape or naming rules change, so old caches rebuild
 _idx_mem = {}              # cache key -> index, so pick/file requests don't re-read the JSON every time
 
@@ -227,9 +254,10 @@ _idx_mem = {}              # cache key -> index, so pick/file requests don't re-
 def index(dirs=None, force=False):
     """Filenames only — path, name, tag, key, bpm. No audio is opened, so thousands of files take seconds.
     Audio features are computed later, per file, only when matching needs them (file_features)."""
-    dirs = dirs or [d for d in os.getenv("SAMPLE_DIRS", "").split(":") if d]
+    dirs = dirs or library_dirs()
     if not dirs:
-        return {"count": 0, "dirs": [], "error": "Set SAMPLE_DIRS=/path/one:/path/two in .env"}
+        return {"count": 0, "dirs": [], "error": "No sample folders set yet. Ask Ernie to set your sample library, "
+                                                 "or click the samples chip in the app."}
     key = hashlib.md5(f"v{INDEX_VERSION}:{':'.join(sorted(dirs))}".encode()).hexdigest()[:8]
     if not force:
         if key in _idx_mem:

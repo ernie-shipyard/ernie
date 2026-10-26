@@ -440,3 +440,15 @@ footer {
   color: var(--primary);
   text-align: center;
 }
+
+.chip-button {
+  margin: 0;
+  background: transparent;
+  font-family: inherit;
+  font-weight: normal;
+  cursor: pointer;
+}
+
+.chip-button:hover {
+  background: rgba(255, 255, 255, 0.06);
+}

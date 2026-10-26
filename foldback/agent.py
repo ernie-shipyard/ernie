@@ -18,6 +18,7 @@ import requests
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel, Field
 
+from foldback import samples
 from mixengine import main as mix
 from mixengine.feedback import REFERENCE, tonal_balance
 
@@ -67,6 +68,7 @@ def status():
         "plugin_ports": plugin_ports(),
         "has_key": bool(key) and key != "your_key_here",
         "agent_configured": bool(os.getenv("ELEVENLABS_AGENT_ID")),
+        "sample_dirs": samples.library_dirs(),
     }
 
 

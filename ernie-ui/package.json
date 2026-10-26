@@ -12,7 +12,8 @@
     "electron": "electron .",
     "dev:electron": "concurrently -k -n api,ui,app \"npm run backend\" \"npm run dev\" \"wait-on http-get://127.0.0.1:8000/health http-get://localhost:5173 && npm run electron\"",
     "start": "vite build && ERNIE_PROD=1 electron .",
-    "backend": "cd .. && if curl -sf http://127.0.0.1:8000/health >/dev/null; then echo 'backend already running on :8000'; tail -f /dev/null; else exec .venv/bin/uvicorn app:app --reload --port 8000; fi"
+    "backend": "cd .. && if curl -sf http://127.0.0.1:8000/health >/dev/null; then echo 'backend already running on :8000'; tail -f /dev/null; else exec .venv/bin/uvicorn app:app --reload --port 8000; fi",
+    "dist:mac": "vite build && node electron/write-repo-path.cjs && electron-builder --mac dir"
   },
   "dependencies": {
     "@elevenlabs/react": "^1.19.1",
@@ -26,11 +27,34 @@
     "@vitejs/plugin-react": "^6.1.2",
     "concurrently": "^10.0.6",
     "electron": "^45.0.0",
+    "electron-builder": "^26.18.0",
     "eslint": "^10.0.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.7",
     "globals": "^17.13.0",
     "vite": "^8.3.4",
     "wait-on": "^9.0.1"
+  },
+  "productName": "Ernie",
+  "description": "Ernie, your personal mixing buddy",
+  "build": {
+    "appId": "com.ernie.app",
+    "productName": "Ernie",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "target": "dir",
+      "icon": "electron/icon.png",
+      "category": "public.app-category.music",
+      "identity": null,
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Ernie listens to you talk, hum and beatbox."
+      }
+    }
   }
 }
