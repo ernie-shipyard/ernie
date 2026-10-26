@@ -113,7 +113,7 @@
 
   <!-- MIDI -->
   <section class="card tab hidden" id="tab-midi">
-    <h2>Hum or beatbox → MIDI (lands as a new track in Live)</h2>
+    <h2>Hum or beatbox → MIDI (lands as a clip on a new track in Live)</h2>
     <div class="row">
       <button id="humMidiBtn">● Hum a melody</button>
       <button id="beatMidiBtn" class="ghost" disabled title="in progress">● Beatbox a beat · in progress</button>
@@ -484,34 +484,42 @@ const midiDone = (url, extra = {}) => async blob => {
 };
 $("scanBtn").onclick = async () => { $("sScan").textContent = "Scanning…"; try { const j = await api("/samples/scan"); $("sScan").textContent = j.error || `${j.count} samples · ` + Object.entries(j.tags).filter(([,n])=>n).map(([t,n])=>`${n} ${t}`).join(", "); } catch (e) { $("sScan").textContent = e.message; } };
 toggleRecord($("humMidiBtn"), "● Hum a melody", "meterM", midiDone("/midi/hum"));
-// metronome: click starts with the recording and runs bars+1 bars (start in bar 1 or 2; the server finds the
-// first bar with a hit), then auto-stops. count_in_s = recording start -> first click as heard (latency only).
-fetch("/session").then(r => r.ok ? r.json() : null).then(j => { const t = j?.inventory?.tempo; if (t) $("bpm").value = $("stTempo").value = Math.round(t); }).catch(() => {});
+// metronome: click starts with the recording: a 4-beat count-in (higher, louder clicks), then `bars` bars, then it
+// auto-stops. count_in_s = recording start -> bar 1's first click as heard (latency + count-in).
+// Live's tempo, and its key when the set has one (Scale Mode on); with no key the box keeps the last pick, else C
+fetch("/session").then(r => r.ok ? r.json() : null).then(j => {
+  const t = j?.inventory?.tempo, k = j?.inventory?.key;
+  if (t) $("bpm").value = $("stTempo").value = Math.round(t);
+  if (k) { $("stKey").value = k; $("stKeyNote").textContent = "from Ableton"; }
+}).catch(() => {});
 let clickCtx;
+const COUNT_IN = 4;
 function scheduleClicks(ctx, t0, beats, spb) {
   for (let b = 0; b < beats; b++) {
-    const t = t0 + b * spb, o = ctx.createOscillator(), g = ctx.createGain();
-    o.frequency.value = b % 4 ? 1000 : 1600;                       // accent each downbeat
-    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.5, t + 0.002); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.04);
+    const t = t0 + b * spb, o = ctx.createOscillator(), g = ctx.createGain(), counting = b < COUNT_IN;
+    o.frequency.value = counting ? 2400 : (b - COUNT_IN) % 4 ? 1000 : 1600;   // accent each downbeat
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(counting ? 0.8 : 0.5, t + 0.002); g.gain.exponentialRampToValueAtTime(0.0001, t + (counting ? 0.07 : 0.04));
     o.connect(g).connect(ctx.destination); o.start(t); o.stop(t + 0.05);
   }
 }
 async function recordWithClick(bpm, bars, onLevel, onTick) {
   const ctx = clickCtx ||= new AudioContext(); await ctx.resume();
-  const spb = 60 / bpm, lead = 0.2, total = bars + 1; let offset, t0, timer, started; const go = new Promise(r => started = r);
+  const spb = 60 / bpm, lead = 0.2, beats = COUNT_IN + 4 * bars; let offset, t0, timer, started; const go = new Promise(r => started = r);
   const blob = await record({ onLevel,
     onStart: () => {
-      t0 = ctx.currentTime + lead; scheduleClicks(ctx, t0, 4 * total, spb);
+      t0 = ctx.currentTime + lead; scheduleClicks(ctx, t0, beats, spb);
       offset = lead + (ctx.outputLatency || 0);
       timer = setInterval(() => { const b = Math.floor((ctx.currentTime - t0) / spb);
-        if (b >= 0 && b < 4 * total) onTick?.(Math.floor(b / 4) + 1, b % 4 + 1, total); }, 40);
+        if (b >= 0 && b < COUNT_IN) onTick?.(0, b + 1, bars);
+        else if (b >= COUNT_IN && b < beats) onTick?.(Math.floor((b - COUNT_IN) / 4) + 1, (b - COUNT_IN) % 4 + 1, bars); }, 40);
       started();
     },
-    until: () => go.then(() => new Promise(r => setTimeout(r, (offset + 4 * total * spb + spb / 2) * 1000))) });
+    until: () => go.then(() => new Promise(r => setTimeout(r, (offset + beats * spb + spb / 2) * 1000))) });
   clearInterval(timer);
-  return { blob, countIn: offset };
+  return { blob, countIn: offset + COUNT_IN * spb };
 }
-const tickLabel = (btn, what) => (bar, beat, total) => btn.textContent = `● ${what}: bar ${bar}/${total} · beat ${beat}`;
+const tickLabel = (btn, what) => (bar, beat, total) =>
+  btn.textContent = bar ? `● ${what}: bar ${bar}/${total} · beat ${beat}` : `count-in ${"1 2 3 4".slice(0, 2 * beat - 1)}…`;
 $("beatMidiBtn").onclick = async () => {
   const btn = $("beatMidiBtn"), label = "● Beatbox a beat", meter = l => $("meterM").style.width = (l*100)+"%";
   if (btn.dataset.busy) { btn._stop?.(); return; }                 // manual stop (metronome off only)

@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import { useConversationClientTool, useConversationControls, useConversationInput } from "@elevenlabs/react";
 
 import { api } from "../services/api.js";
@@ -9,6 +9,7 @@ import { keyRoot, recordWithClick, refTone } from "../services/audio.js";
 // string the agent turns into speech. Errors are returned, not thrown, so Ernie can say what went wrong.
 
 export const CAPTURE_PREFIX = "[capture finished]";
+export const IDLE_PREFIX = "[idle]";
 
 const ONESHOT_LAYERS = new Set(["drums", "fx"]);
 const SAMPLE_TAG = { drums: "drums", bass: "bass", pad: "pad", synth: "synth", fx: "fx", vocals: "vocal" };
@@ -28,7 +29,11 @@ async function sessionTempo() {
 
 export function useErnieTools({ addCard, updateCard, modeRef }) {
   const { sendUserMessage } = useConversationControls();
-  const { setMuted } = useConversationInput();
+  const { isMuted, setMuted } = useConversationInput();
+  const mutedRef = useRef(isMuted);
+  useEffect(() => {
+    mutedRef.current = isMuted;
+  }, [isMuted]);
   const listening = useRef(null); // {captureId, cardId}
 
   async function pollCapture(captureId, cardId, track) {
@@ -118,6 +123,7 @@ export function useErnieTools({ addCard, updateCard, modeRef }) {
     // let Ernie finish "hum it after the clicks" so the click and the take are clean
     for (let i = 0; i < 40 && modeRef.current === "speaking"; i++) await sleep(250);
     await sleep(300);
+    const wasMuted = mutedRef.current; // the producer's own mute survives the take
     setMuted(true); // the agent shouldn't hear the hum as a reply
     try {
       const root = keyRoot(key);
@@ -126,9 +132,10 @@ export function useErnieTools({ addCard, updateCard, modeRef }) {
         await refTone(root.midi, (2 * 60) / tempo);
       }
       const take = await recordWithClick(tempo, nBars, (bar, beat, total) =>
-        updateCard(cardId, { phase: `● bar ${bar}/${total} · beat ${beat}` }),
+        updateCard(cardId, bar ? { count: null, phase: `● bar ${bar}/${total} · beat ${beat}` }
+                               : { count: beat, phase: "Count-in, come in on bar 1" }),
       );
-      updateCard(cardId, { phase: "Transcribing to MIDI…" });
+      updateCard(cardId, { count: null, phase: "Transcribing to MIDI…" });
       const out = await api.humToMidi({ ...take, bpm: tempo, bars: nBars, trackName: layer || "ernie melody" });
       updateCard(cardId, { phase: "", result: out });
       return say({ notes: out.info.note_count, tempo: out.info.tempo, first_notes: out.info.notes.slice(0, 8),
@@ -137,7 +144,7 @@ export function useErnieTools({ addCard, updateCard, modeRef }) {
       updateCard(cardId, { phase: "", error: e.message });
       return `error: ${e.message}`;
     } finally {
-      setMuted(false);
+      setMuted(wasMuted);
     }
   });
 

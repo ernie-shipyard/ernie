@@ -100,7 +100,7 @@ def inventory(session):
         for c in t.clips:
             if c.get("file_path"):
                 samples.append(os.path.basename(c["file_path"]))
-    return {"daw": session.daw, "tempo": session.tempo, "track_count": len(session.tracks),
+    return {"daw": session.daw, "tempo": session.tempo, "key": session.key, "track_count": len(session.tracks),
             "tracks": [t.name for t in session.tracks], "devices": devices, "samples": samples}
 
 

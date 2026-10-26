@@ -63,8 +63,16 @@ Generating: pick the layer (drums, bass, pad, synth, fx, vocals) and pass a shor
 when the producer said them or the session has them. Generation takes up to 40 seconds; say something brief like
 "cooking that up" before calling. When it returns, tell them it's in the chat to preview.
 
-Hum to MIDI: before record_hum say "Hum it after the clicks." The tool counts in, records and returns notes.
-Then summarize the result (note count, tempo, suggested instrument) in one sentence.
+Hum to MIDI: before record_hum say something like "Four clicks count you in, start humming right after the fourth."
+The tool plays a 4-beat count-in, records and returns notes. When live_track_created is true the take is already a
+clip in the first slot of a new MIDI track in Live's Session view; tell them it's there and they can copy and paste it
+wherever they want it. Then summarize the result (note count, tempo, suggested
+instrument) in one sentence.
+
+Quiet and mute: producers go quiet for long stretches while they work. When they stop talking, call skip_turn and
+stay silent; never ask if they're still there on your own. A message that starts with [idle] is from the app after a
+minute of quiet: answer it with one short, casual check-in (vary it). A [mic muted] update means they can't be
+heard; stay silent until [mic unmuted]. Don't mention these messages.
 
 Ground rules: never invent measurements, track names, plugins or samples. Only cite numbers that came from a
 tool. If something isn't available, say so. Never say "as an AI"."""
@@ -122,8 +130,8 @@ TOOLS = [
     },
     {
         "name": "record_hum",
-        "description": "Play a count-in, record the producer humming, and turn it into a MIDI file (and a new MIDI "
-                       "track in Live when connected).",
+        "description": "Play a 4-beat count-in, record the producer humming, and turn it into a MIDI file (and, when "
+                       "Live is connected, a new MIDI track with the take as a clip in its first slot).",
         "parameters": {"type": "object", "required": [], "properties": {
             "bars": {"type": "integer", "description": "How many bars to record, 1 to 8. Default 2."},
             "bpm": {"type": "number", "description": "Tempo for the click and quantizing. 0 for the session tempo."},
@@ -140,6 +148,12 @@ TOOLS = [
         "response_timeout_secs": 15,
     },
 ]
+
+
+# Ernie stays quiet through silence (skip_turn); the app sends [idle] after a minute, since turn_timeout caps at 30 s.
+BUILT_IN_TOOLS = {"skip_turn": {"type": "system", "name": "skip_turn", "description": "",
+                                "params": {"system_tool_type": "skip_turn"}}}
+TURN = {"turn_timeout": 30}
 
 
 def _tool_config(tool):
@@ -181,7 +195,8 @@ def main():
     agent_id = os.getenv("ELEVENLABS_AGENT_ID", "")
     if args.dry_run:
         print(json.dumps({"prompt": SYSTEM_PROMPT, "first_message": FIRST_MESSAGE,
-                          "tools": [_tool_config(t) for t in TOOLS]}, indent=2))
+                          "tools": [_tool_config(t) for t in TOOLS], "built_in_tools": BUILT_IN_TOOLS,
+                          "turn": TURN}, indent=2))
         return
     if not key or key == "your_key_here":
         sys.exit("ELEVENLABS_API_KEY is missing from .env (it must be the secret that starts with sk_).")
@@ -227,10 +242,10 @@ def main():
             ids.append(call("POST", "/convai/tools", json=body)["id"])
             print(f"created tool {tool['name']}")
 
-    prompt = {"prompt": SYSTEM_PROMPT, "tool_ids": ids}
+    prompt = {"prompt": SYSTEM_PROMPT, "tool_ids": ids, "built_in_tools": BUILT_IN_TOOLS}
     if args.create:
         created = call("POST", "/convai/agents/create", json={"name": "Ernie", "conversation_config": {
-            "agent": {"first_message": FIRST_MESSAGE, "language": "en", "prompt": prompt},
+            "agent": {"first_message": FIRST_MESSAGE, "language": "en", "prompt": prompt}, "turn": TURN,
             **({"tts": {"voice_id": voice}} if (voice := _library_voice(s, call)) else {})}})
         _write_env("ELEVENLABS_AGENT_ID", created["agent_id"])
         print(f"\ncreated agent Ernie ({created['agent_id']}) and saved its id to .env. Restart the backend.")
@@ -239,8 +254,11 @@ def main():
     ours = set(ids) | {existing.get(t["name"]) for t in TOOLS}
     kept = [i for i in current["conversation_config"]["agent"]["prompt"].get("tool_ids") or [] if i not in ours]
     prompt["tool_ids"] = ids + kept
+    # keep built-in tools set up in the dashboard (end_call...) next to ours
+    prompt["built_in_tools"] = {**(current["conversation_config"]["agent"]["prompt"].get("built_in_tools") or {}),
+                                **BUILT_IN_TOOLS}
     call("PATCH", f"/convai/agents/{agent_id}", json={"conversation_config": {
-        "agent": {"first_message": FIRST_MESSAGE, "prompt": prompt}}})
+        "agent": {"first_message": FIRST_MESSAGE, "prompt": prompt}, "turn": TURN}})
     print(f"\nagent {current.get('name', agent_id)} now has {len(prompt['tool_ids'])} tools and the Ernie prompt "
           f"(voice and LLM unchanged).")
 

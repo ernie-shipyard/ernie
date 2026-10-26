@@ -401,10 +401,11 @@ async def ask(audio: UploadFile = File(None), text: str = Form("")):
 
 # ---------------------------------------------------------------- hum / beatbox -> MIDI
 
-def _live_track(name: str):
-    """A new MIDI track in Live is a bonus: without AbletonOSC the .mid is still the result, not a 500."""
+def _live_track(name: str, notes, length):
+    """A new MIDI track in Live, with the take as a clip in its first slot, is a bonus: without AbletonOSC the .mid
+    is still the result, not a 500."""
     try:
-        return live.create_midi_track(name)
+        return live.create_midi_track(name, notes, length)
     except Exception as e:
         return {"error": f"Couldn't add a track in Live ({e}). Drag the .mid in by hand."}
 
@@ -420,14 +421,21 @@ async def midi_hum(audio: UploadFile = File(...), add_track: bool = Form(True), 
         info = hum2midi.hum_to_midi_file(_to_wav(raw), out, tempo_bpm=bpm, bars=bars, count_in_s=count_in_s)
     except ValueError as e:
         raise HTTPException(400, str(e))
-    track = _live_track(track_name) if add_track else None
+    notes, length = info.pop("_notes"), info.pop("_length")
+    track = _live_track(track_name, notes, length) if add_track else None
     pitches = info.pop("pitches")
     instrument = samples.suggest_for_melody(pitches)
     # most-sung pitch class, as analyze_hum does — informational; the Stack key box doesn't take it
     key_center = NOTE_NAMES[int(np.argmax(np.bincount(np.array(pitches) % 12, minlength=12)))]
     return {"midi": f"/midi/{mid_id}", "info": info, "track": track, "instrument": instrument, "key_center": key_center,
             "say": f"{info['note_count']} notes at {info['tempo']} bpm, starting around {info['notes'][0] if info['notes'] else '?'}. "
-                   f"That register wants {instrument}. Drag the file onto the new track."}
+                   f"That register wants {instrument}. " + _clip_line(track)}
+
+
+def _clip_line(track):
+    if track and track.get("clip_slot") is not None:
+        return "The clip is in the new track's first slot in Session view; copy and paste it wherever you want it."
+    return "Drag the file onto the new track." if track and not track.get("error") else ""
 
 
 _take_log = logging.getLogger("uvicorn.error")     # shows in the uvicorn terminal
@@ -455,13 +463,14 @@ async def midi_beatbox(audio: UploadFile = File(...), add_track: bool = Form(Tru
         _log_take("/midi/beatbox", bpm, bars, count_in_s, raw, wav, "<2")
         raise HTTPException(400, str(e))
     _log_take("/midi/beatbox", bpm, bars, count_in_s, raw, wav, info["hits"])
-    track = _live_track("foldback drums") if add_track else None
+    notes, length = info.pop("_notes"), info.pop("_length")
+    track = _live_track("foldback drums", notes, length) if add_track else None
     onsets, types, y = info.pop("_onsets"), info.pop("_types"), info.pop("_y")
     matches = samples.match_hits(y, onsets, types, samples.index()) if os.getenv("SAMPLE_DIRS") else {}
     picks = ", ".join(f"{k}: {v[0]['name']}" for k, v in matches.items() if v)
     return {"midi": f"/midi/{mid_id}", "info": info, "track": track, "samples": matches,
             "say": f"{info['hits']} hits: {info['kick']} kicks, {info['snare']} snares, {info['hat']} hats at {info['tempo']} bpm. "
-                   + (f"From your library I'd load {picks}." if picks else "Load a Drum Rack on the new track and drop this in.")}
+                   + (f"From your library I'd load {picks}. " if picks else "Load a Drum Rack on the new track. ") + _clip_line(track)}
 
 
 @app.post("/calibrate/save")

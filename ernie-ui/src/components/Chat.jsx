@@ -77,6 +77,7 @@ function HumCard({ card }) {
       <div className="card-title">
         {!r && !card.error && <span className="pulse" />}Hum → MIDI{card.layer ? `: ${card.layer}` : ""}
       </div>
+      {card.count && <div className="count-in">{card.count}</div>}
       {card.phase && <div className="card-sub">{card.phase}</div>}
       {card.error && <div className="error-message">{card.error}</div>}
       {r && (
@@ -85,7 +86,10 @@ function HumCard({ card }) {
           <div className="card-sub">
             <a href={r.midi} download>download .mid</a> · {r.info.note_count} notes at {r.info.tempo} bpm
             {r.instrument && ` · try ${r.instrument}`}
-            {r.track && !r.track.mock && !r.track.error && " · new MIDI track in Live"}
+            {r.track && !r.track.mock && !r.track.error &&
+              (r.track.clip_slot != null
+                ? " · clip in the new track's first slot in Session view, copy and paste it wherever you want"
+                : " · new MIDI track in Live")}
           </div>
         </>
       )}

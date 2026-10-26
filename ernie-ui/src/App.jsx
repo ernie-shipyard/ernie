@@ -3,18 +3,21 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ConversationProvider,
   useConversationControls,
+  useConversationInput,
   useConversationStatus,
   useConversationMode,
 } from "@elevenlabs/react";
 
 import Avatar from "./components/Avatar.jsx";
 import Chat from "./components/Chat.jsx";
-import { CAPTURE_PREFIX, useErnieTools } from "./hooks/useErnieTools.js";
+import { CAPTURE_PREFIX, IDLE_PREFIX, useErnieTools } from "./hooks/useErnieTools.js";
 import { api } from "./services/api.js";
 
 import "./App.css";
 
 const STATUS_POLL_MS = 5000;
+// Ernie checks in after this much quiet. The agent's own turn timeout tops out at 30 s, so the app keeps time.
+const IDLE_MS = 60_000;
 // The original Foldback web UI (Stack, Hum → MIDI, Mix notes). Same origin as the API in the production build.
 const STUDIO_URL = import.meta.env.DEV ? "http://127.0.0.1:8000/" : "/";
 const TABS = [["talk", "Talk"], ["studio", "Studio"]];
@@ -42,7 +45,8 @@ function Chip({ ok, children }) {
 }
 
 function Ernie({ chat, errorMessage, setErrorMessage }) {
-  const { startSession, endSession, sendUserMessage } = useConversationControls();
+  const { startSession, endSession, sendUserMessage, sendContextualUpdate } = useConversationControls();
+  const { isMuted, setMuted } = useConversationInput();
   const { status } = useConversationStatus();
   const { mode } = useConversationMode();
   const backend = useBackendStatus();
@@ -56,6 +60,30 @@ function Ernie({ chat, errorMessage, setErrorMessage }) {
   }, [mode]);
 
   useErnieTools({ addCard: chat.addCard, updateCard: chat.updateCard, modeRef });
+
+  // One check-in per stretch of quiet: after it fires, it waits for the producer to say something again.
+  // Any message, Ernie talking, or a mute change restarts the clock; muted, it never fires.
+  const [checkedInAt, setCheckedInAt] = useState(null); // chat.userTurns when Ernie last checked in
+  const idleArmed = connected && !isMuted && mode !== "speaking" && checkedInAt !== chat.userTurns;
+  useEffect(() => {
+    if (!idleArmed) return;
+    const timer = setTimeout(() => {
+      sendUserMessage(`${IDLE_PREFIX} The producer has been quiet for a minute.`);
+      setCheckedInAt(chat.userTurns);
+    }, IDLE_MS);
+    return () => clearTimeout(timer);
+  }, [idleArmed, chat.messages.length, chat.userTurns, sendUserMessage]);
+
+  function toggleMute() {
+    const muted = !isMuted;
+    setMuted(muted);
+    setCheckedInAt(null);
+    sendContextualUpdate(
+      muted
+        ? "[mic muted] The producer muted their mic. You can't hear them; stay quiet until they unmute."
+        : "[mic unmuted] The producer unmuted their mic and can talk again.",
+    );
+  }
 
   async function handleTalk() {
     setErrorMessage("");
@@ -124,12 +152,21 @@ function Ernie({ chat, errorMessage, setErrorMessage }) {
         <section className="stage">
           <Avatar speaking={isSpeaking} />
           <h2>
-            {isSpeaking ? "Ernie is talking..." : connected ? "I'm listening, bro." : "Ready to cook something up?"}
+            {isSpeaking
+              ? "Ernie is talking..."
+              : connected
+                ? isMuted ? "Muted. I'm chillin'." : "I'm listening, bro."
+                : "Ready to cook something up?"}
           </h2>
           <p className="subtitle">Your AI music production collaborator</p>
 
           {connected ? (
-            <button className="stop-button" onClick={() => endSession()}>Stop Conversation</button>
+            <div className="session-buttons">
+              <button className={`mute-button${isMuted ? " muted" : ""}`} onClick={toggleMute} aria-pressed={isMuted}>
+                {isMuted ? "Unmute Mic" : "Mute Mic"}
+              </button>
+              <button className="stop-button" onClick={() => endSession()}>Stop Conversation</button>
+            </div>
           ) : (
             <button onClick={handleTalk} disabled={status === "connecting"}>
               {status === "connecting" ? "Connecting..." : "Talk to Ernie"}
@@ -151,6 +188,7 @@ function Ernie({ chat, errorMessage, setErrorMessage }) {
 // Transcript + tool cards. Lives above the provider so onMessage can write to it.
 function useChat() {
   const [messages, setMessages] = useState([]);
+  const [userTurns, setUserTurns] = useState(0); // things the producer said or typed
   const typed = useRef([]); // texts we already showed locally, so their echo isn't shown twice
 
   const push = useCallback((m) => setMessages((list) => [...list, { id: newId(), ...m }]), []);
@@ -159,7 +197,9 @@ function useChat() {
     ({ message, role }) => {
       if (!message) return;
       if (role === "user") {
-        if (message.startsWith(CAPTURE_PREFIX)) return; // app-to-agent data, not something the producer said
+        // app-to-agent data, not something the producer said
+        if (message.startsWith(CAPTURE_PREFIX) || message.startsWith(IDLE_PREFIX)) return;
+        setUserTurns((n) => n + 1);
         const i = typed.current.indexOf(message);
         if (i !== -1) {
           typed.current.splice(i, 1);
@@ -191,7 +231,7 @@ function useChat() {
     [],
   );
 
-  return { messages, onMessage, addTyped, addCard, updateCard };
+  return { messages, userTurns, onMessage, addTyped, addCard, updateCard };
 }
 
 export default function App() {

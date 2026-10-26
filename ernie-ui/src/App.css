@@ -117,6 +117,28 @@ button:disabled {
   background: #e57841;
 }
 
+.session-buttons {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.mute-button {
+  background: transparent;
+  color: var(--primary);
+  box-shadow: inset 0 0 0 2px var(--primary);
+}
+
+.mute-button:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.mute-button.muted {
+  background: var(--primary);
+  color: #17120e;
+}
+
 .error-message {
   color: var(--error);
   max-width: 500px;
@@ -409,4 +431,12 @@ footer {
     max-height: none;
     min-height: 360px;
   }
+}
+
+.count-in {
+  font-size: 56px;
+  font-weight: bold;
+  line-height: 1.1;
+  color: var(--primary);
+  text-align: center;
 }

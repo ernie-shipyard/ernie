@@ -101,20 +101,25 @@ def notes_to_midi(notes_beats, tempo_bpm, path, channel=0, program=0):
     return path
 
 
+def clip_length(q, bars=None, beats_per_bar=4):
+    """Clip length in beats: the take's bars, else whole bars up to the last note's end."""
+    if bars:
+        return bars * beats_per_bar
+    end = max((sb + db for _, sb, db, _ in q), default=0)
+    return max(1, -(-end // beats_per_bar)) * beats_per_bar
+
+
 def align_to_bars(q, bars=None, beats_per_bar=4):
-    """Metronome take, notes in beats from the first click. Like grid_hits: bar 1 is the first bar holding a
-    note (the singer may come in on any bar); earlier notes are dropped, the next `bars` bars kept."""
-    q = [n for n in q if n[1] >= 0]                                 # before the first click
-    if not q:
-        return q
-    first = min(sb for _, sb, _, _ in q) // beats_per_bar * beats_per_bar
-    end = first + bars * beats_per_bar if bars else float("inf")
-    return [(p, sb - first, min(db, end - sb), v) for p, sb, db, v in q if sb < end]
+    """Metronome take, notes in beats from bar 1 (the first click after the 4-beat count-in). Like grid_hits: a note
+    up to a 16th early lands on the downbeat, anything earlier is count-in noise, and only `bars` bars are kept."""
+    q = [(p, max(sb, 0.0), db, v) for p, sb, db, v in q if sb >= -0.25]
+    end = bars * beats_per_bar if bars else float("inf")
+    return [(p, sb, min(db, end - sb), v) for p, sb, db, v in q if sb < end]
 
 
 def hum_to_midi_file(wav_path, out_path, tempo_bpm=None, bars=None, count_in_s=0.0):
-    """tempo_bpm known (metronome recorder): times count from the first click, count_in_s after recording
-    start, and the take is bar-aligned. Otherwise the tempo is estimated and time 0 is the recording start."""
+    """tempo_bpm known (metronome recorder): times count from bar 1, count_in_s after recording start (latency plus
+    the 4-beat count-in), and the take is bar-aligned. Otherwise the tempo is estimated and time 0 is the recording start."""
     y = load(wav_path)
     notes, tempo = hum_to_notes(y, tempo_bpm)
     if tempo_bpm:
@@ -127,7 +132,7 @@ def hum_to_midi_file(wav_path, out_path, tempo_bpm=None, bars=None, count_in_s=0
     notes_to_midi(q, tempo, out_path)
     return {"tempo": round(tempo), "note_count": len(q),
             "notes": [librosa.midi_to_note(p) for p, *_ in q][:16],
-            "pitches": [int(p) for p, *_ in q]}
+            "pitches": [int(p) for p, *_ in q], "_notes": q, "_length": clip_length(q, bars)}
 
 
 # ----------------------------------------------------------------- beatbox
@@ -163,14 +168,13 @@ def take_hits(wav_path):
 
 
 def grid_hits(wav_path, bpm, bars=None, count_in_s=0.0):
-    """Known tempo. Slots are 16ths counted from the first click; count_in_s is only the latency from
-    recording start to that click as heard. In each slot (owning +-1/32 note) take the strongest
+    """Known tempo. Slots are 16ths counted from bar 1; count_in_s is the time from recording start to bar 1's
+    first click as heard (latency plus the 4-beat count-in). In each slot (owning +-1/32 note) take the strongest
     onset-strength peak, so soft hits right after loud ones aren't lost to onset_detect's adaptive
     threshold. Each peak is backtracked like onset_detect, but by at most MAX_BACKTRACK_S so a hit straight
     after a loud one doesn't walk back into that one's tail; the slot comes from the backtracked start
     (a soft 'b' peaks ~90 ms after it starts). Then the amplitude gate over the whole recording.
-    Bar 1 is the first bar holding a hit that passes the gate (the performer may start in any bar);
-    earlier hits are dropped, the next `bars` bars are kept and their slots renumbered from bar 1.
+    A hit one slot early lands on the downbeat; earlier hits are count-in noise. Only `bars` bars are kept.
     Returns padded audio, kept onset times (padded-audio seconds, for analysis) and their slot indices."""
     y = np.concatenate([np.zeros(int(PAD_S * SR)), load(wav_path)])
     env = librosa.onset.onset_strength(y=y, sr=SR)                 # same envelope + hop (512) as onset_detect
@@ -184,8 +188,9 @@ def grid_hits(wav_path, bpm, bars=None, count_in_s=0.0):
     best = {}
     for i, t in zip(peak_i, starts):
         s = int(round((t - PAD_S - count_in_s) / (60.0 / bpm / 4)))
-        if s < 0:                                                  # before the first click
+        if s < -1:                                                 # during the count-in
             continue
+        s = max(s, 0)
         if s not in best or env[i] > env[best[s][0]]:
             best[s] = (i, t)
     if not best:
@@ -195,9 +200,8 @@ def grid_hits(wav_path, bpm, bars=None, count_in_s=0.0):
     peaks = np.array([_window_peak(y, t) for t in onsets])
     keep = peaks >= GATE_RATIO * peaks.max()                       # drop breath / room-tail ghost onsets
     onsets, order = onsets[keep], order[keep]
-    first = order.min() // SLOTS_PER_BAR * SLOTS_PER_BAR           # bar 1 = first bar with a real hit
-    win = (order >= first) & (order < first + SLOTS_PER_BAR * bars if bars else True)
-    return y, onsets[win], order[win] - first
+    win = order < SLOTS_PER_BAR * bars if bars else np.ones(len(order), dtype=bool)
+    return y, onsets[win], order[win]
 
 
 def hit_features(y, t, sr=SR, win=HIT_WIN_S):
@@ -326,6 +330,6 @@ def beatbox_to_midi_file(wav_path, out_path, tempo_bpm=None, bars=None, count_in
         q = [(p, int(s) * 0.25, 0.25, v) for (p, _, _, v), s in zip(notes, slots)]   # 16th slot -> beats
     notes_to_midi(q, tempo_bpm, out_path, channel=9)
     counts = {"kick": sum(p == KICK for p, *_ in q), "snare": sum(p == SNARE for p, *_ in q), "hat": sum(p == HAT for p, *_ in q)}
-    info = {"tempo": round(tempo_bpm), "hits": len(q), **counts}
+    info = {"tempo": round(tempo_bpm), "hits": len(q), **counts, "_notes": q, "_length": clip_length(q, bars)}
     info["_onsets"], info["_types"], info["_y"] = [float(t) for t in onsets], types, y   # stripped before JSON
     return info

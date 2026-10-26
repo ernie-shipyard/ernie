@@ -1,3 +1,23 @@
+# Ernie, your personal mixing buddy
+
+![Ernie](docs/images/ernie.png)
+
+Originally built for **Hacktoberfest Hack Day New York City x Tech@NYU Buildathon: Shipyard**.
+
+🏆 **1st place winner, ElevenLabs Voice AI track.** See the [MLH submission](https://www.mlh.com/events/hacktoberfest-2026-new-york-city/submissions/01a16f63-35b7-b157-3f01-3931d74b9ebc).
+
+> The MLH page doesn't list the team members. Ernie was created by Rishi Krishnan, Kristyn Cho, Romy Park, and Silas Wang.
+
+### Meet Ernie
+
+Bernerd “The Hit Maker” Victor Wegman, or simply “Ernie”, is a voice in my head that does not leave me alone until I make good music. It is tuned to talk in an emotionally engaging manner and offer genuine feedback on your musical creative endeavor.
+
+He earned a PhD in Hustling from GrammyU and successfully defended his dissertation on “musonomics: the economic viability of the creative process” in front of a board of industry professionals and esteemed researchers from academia ranging from basket-weavers, electrical engineers, recording engineers, and customer support representatives.
+
+His diverse educational, entrepreneurial, and philanthropic background has proven to create hits. Some of the artists that he frequently collaborates with include.
+
+---
+
 # ERNIE / Foldback
 
 ## ERNIE at a glance
