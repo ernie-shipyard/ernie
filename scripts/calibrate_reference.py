@@ -34,7 +34,8 @@ METRICS = ("loudness_lufs", "side_to_mid_db", "low_side_to_mid_db", "low_end_cor
            "crest_factor_db")
 
 
-def windows(path):
+def main_sections(path):
+    """(audio, sample rate, measurements) for each capture-sized window in the track's main sections."""
     audio, sr = sf.read(path, dtype="float32", always_2d=True)
     if audio.shape[1] > 2:
         audio = audio[:, :2]
@@ -42,12 +43,16 @@ def windows(path):
         audio = np.repeat(audio, 2, axis=1)
     size = int(WINDOW_S * sr)
     cuts = [audio[i:i + size] for i in range(0, len(audio) - size + 1, size)]
-    measured = [analyze_audio(c, sr) for c in cuts]
-    measured = [m for m in measured if not m.is_silent and m.loudness_lufs is not None]
+    measured = [(c, sr, analyze_audio(c, sr)) for c in cuts]
+    measured = [w for w in measured if not w[2].is_silent and w[2].loudness_lufs is not None]
     if not measured:
         return []
-    loudest = max(m.loudness_lufs for m in measured)
-    return [m for m in measured if m.loudness_lufs >= loudest - MAIN_SECTION_DB]
+    loudest = max(m.loudness_lufs for _, _, m in measured)
+    return [w for w in measured if w[2].loudness_lufs >= loudest - MAIN_SECTION_DB]
+
+
+def windows(path):
+    return [m for _, _, m in main_sections(path)]
 
 
 def pct(values, q):
@@ -76,6 +81,16 @@ def main():
     if not all_windows:
         sys.exit("No usable audio found.")
 
+    profile = build_profile(all_windows, args.genre, len(used))
+    out = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "mixengine", f"reference_{args.genre}.json")
+    with open(out, "w") as f:
+        json.dump(profile, f, indent=2)
+    print(f"\n{len(used)} tracks, {len(all_windows)} windows -> {os.path.normpath(out)}")
+    print(json.dumps(profile, indent=2))
+
+
+def build_profile(all_windows, genre, source_tracks):
+    """The reference profile for a set of measured windows (see the module docstring)."""
     names = [n for n, _, _ in OCTAVE_BANDS]
     levels = np.array([[m.octave_bands_db.get(n, np.nan) for n in names] for m in all_windows])
     # target: each window's curve with its own overall level removed, then the median across windows
@@ -85,9 +100,9 @@ def main():
     deviations = np.array([[balance_offsets(dict(zip(names, row)), dict(zip(names, target))).get(n, np.nan)
                             for n in names] for row in levels])
     profile = {
-        "genre": args.genre,
+        "genre": genre,
         "built": date.today().isoformat(),
-        "source_tracks": len(used),
+        "source_tracks": source_tracks,
         "windows": len(all_windows),
         "window_seconds": WINDOW_S,
         "bands": {n: {"target": round(float(target[i]), 2),
@@ -98,12 +113,7 @@ def main():
         values = [getattr(m, metric) for m in all_windows if getattr(m, metric) is not None]
         if values:
             profile[metric] = {"p5": pct(values, 5), "p50": pct(values, 50), "p95": pct(values, 95)}
-
-    out = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "mixengine", f"reference_{args.genre}.json")
-    with open(out, "w") as f:
-        json.dump(profile, f, indent=2)
-    print(f"\n{len(used)} tracks, {len(all_windows)} windows -> {os.path.normpath(out)}")
-    print(json.dumps(profile, indent=2))
+    return profile
 
 
 if __name__ == "__main__":

@@ -62,10 +62,10 @@ low-end correlation and side energy under 120 Hz, and low-end punch.
 - Louder than the loudest references, a stereo low end, a wider-than-reference image and a low end that doesn't
   move between hits are notes; a quiet pre-master and a peak at the limiter ceiling are not.
 
-Validated on the EDM folder: about 1 in 8 held-out reference drops get a medium/high tonal note; a reference drop
-with one known problem gets the matching note for stereo sub and over-limiting 25/25, weak low end 24/25,
-sibilance 23/25, nasal 22/25, harsh 21/25, boomy 20/25, dark 17/25, boxy 15/25 and mud 11/25. Mud is the weak
-spot because the references themselves span about −6..+8 dB at 250–500 Hz.
+Evaluated held-out by track (`python evals/mix_eval.py "<folder>"`, see `evals/README.md`): 20% of clean reference
+windows get a medium/high note; stereo sub is caught from −6 dB side/mid and over-limiting 96% at 12 dB into a
+clipper; mid/high EQ boosts cross 50% detection at +7–9 dB. Cuts (dark, weak low end) and low-mid boosts are the weak
+spots, because the references themselves span about −6..+8 dB at 250–500 Hz.
 
 ## One-shot capture contract
 
