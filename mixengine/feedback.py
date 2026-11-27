@@ -375,18 +375,20 @@ def tonal_balance(measurements: Measurements, reference: Optional[dict] = None) 
     return out
 
 
-def _append_full_mix(by_track: Dict[str, List[Recommendation]], track: TrackState) -> None:
+def _append_full_mix(by_track: Dict[str, List[Recommendation]], track: TrackState,
+                     reference: Optional[dict] = None) -> None:
     measurements = track.latest_measurements
+    reference = reference or REFERENCE
     if (measurements is None or measurements.is_silent or _role(track) not in FULL_MIX_ROLES
-            or not REFERENCE or measurements.duration_seconds < 3.0):
+            or not reference or measurements.duration_seconds < 3.0):
         return
-    genre = REFERENCE.get("genre", "reference")
+    genre = reference.get("genre", "reference")
 
     def note(priority, rank, code, message, reasoning, fix, evidence):
         by_track[track.id].append(_new_recommendation(priority, rank, code, track, message, reasoning, fix, evidence))
 
     # --- tonal balance against the references: real problems first, then the strongest leanings
-    balance = tonal_balance(measurements)
+    balance = tonal_balance(measurements, reference)
     outside = sorted(((b["outside_by_db"], n, b) for n, b in balance.items() if b["verdict"] == "outside"), reverse=True)
     leaning = sorted(((b["past_middle_db"], n, b) for n, b in balance.items() if b["verdict"] == "leaning"), reverse=True)
     for tier, items in (("outside", outside[:MAX_BAND_NOTES]), ("leaning", leaning[:MAX_LEAN_NOTES])):
@@ -415,7 +417,7 @@ def _append_full_mix(by_track: Dict[str, List[Recommendation]], track: TrackStat
                   "references_db": band["references_db"], "tier": tier})
 
     # --- loudness: only "louder than the loudest references"; a quiet pre-master is normal
-    ref = REFERENCE.get("loudness_lufs")
+    ref = reference.get("loudness_lufs")
     lufs = measurements.loudness_lufs
     if ref and lufs is not None and lufs > ref["p95"] + 1.0:
         note("medium", 1, "louder_than_references",
@@ -427,7 +429,7 @@ def _append_full_mix(by_track: Dict[str, List[Recommendation]], track: TrackStat
 
     # --- low end in mono
     corr, low_side = measurements.low_end_correlation, measurements.low_side_to_mid_db
-    ref_side = REFERENCE.get("low_side_to_mid_db")
+    ref_side = reference.get("low_side_to_mid_db")
     if (corr is not None and corr < 0.8) or (ref_side and low_side is not None and low_side > ref_side["p95"] + 3.0):
         note("high" if corr is not None and corr < 0.5 else "medium", 1, "wide_low_end",
              "The low end isn't mono: there's stereo content under 120 Hz.",
@@ -438,7 +440,7 @@ def _append_full_mix(by_track: Dict[str, List[Recommendation]], track: TrackStat
              {"low_end_correlation": corr, "low_side_to_mid_db": low_side, "reference_low_side_to_mid_db": ref_side})
 
     # --- overall width
-    width, ref_width = measurements.side_to_mid_db, REFERENCE.get("side_to_mid_db")
+    width, ref_width = measurements.side_to_mid_db, reference.get("side_to_mid_db")
     if ref_width and width is not None:
         if width > ref_width["p95"] + 2.0:
             note("medium", 3, "wider_than_references",
@@ -456,7 +458,7 @@ def _append_full_mix(by_track: Dict[str, List[Recommendation]], track: TrackStat
                  {"side_to_mid_db": round(width, 1), "reference": ref_width})
 
     # --- low-end punch: a steady wall instead of kick and bass taking turns
-    punch, ref_punch = measurements.low_end_punch_db, REFERENCE.get("low_end_punch_db")
+    punch, ref_punch = measurements.low_end_punch_db, reference.get("low_end_punch_db")
     if ref_punch and punch is not None and punch < ref_punch["p5"]:
         note("medium", 3, "low_end_wall",
              "The low end is a steady wall: the kick isn't punching through the bass.",
@@ -466,12 +468,13 @@ def _append_full_mix(by_track: Dict[str, List[Recommendation]], track: TrackStat
              {"low_end_punch_db": round(punch, 1), "reference": ref_punch})
 
 
-def build_recommendations(tracks: List[TrackState]) -> Dict[str, List[Recommendation]]:
+def build_recommendations(tracks: List[TrackState], reference: Optional[dict] = None) -> Dict[str, List[Recommendation]]:
+    """reference: a profile to judge full mixes against instead of the committed one (evals use per-fold profiles)."""
     by_track: Dict[str, List[Recommendation]] = {track.id: [] for track in tracks}
     active = [track for track in tracks if track.latest_measurements is not None]
     for track in active:
         _append_level_and_width(by_track, track)
-        _append_full_mix(by_track, track)
+        _append_full_mix(by_track, track, reference)
     _append_peer_notes(by_track, active)
     for recommendations in by_track.values():
         # most serious first; equal notes keep the order they were added in (tonal notes: furthest outside first)

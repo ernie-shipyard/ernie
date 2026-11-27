@@ -97,3 +97,23 @@ def test_loudness_matches_bs1770_for_a_reference_tone():
     tone = 0.1 * np.sin(2 * np.pi * 1000 * np.arange(SR * 3) / SR)
     measurements = analyze_audio(np.stack([tone, tone], axis=1).astype(np.float32), SR)
     assert measurements.loudness_lufs == pytest.approx(-20.0, abs=0.1)
+
+
+SWEEP_BANDS = ("bass", "upper_bass", "low_mid", "mid", "upper_mid", "presence", "brilliance", "air")
+
+
+@pytest.mark.parametrize("band", SWEEP_BANDS)
+@pytest.mark.parametrize("db", [16.0, -16.0])
+def test_every_band_far_off_the_curve_is_a_serious_note(band, db):
+    # too little air is a gentle (low priority) note by design: breakdowns and lo-fi parts lack it legitimately
+    if band == "air" and db < 0:
+        pytest.skip("quiet air stays low priority")
+    _, recs = notes(shaped_mix(boost=(band, db)))
+    assert "{}_{}".format(band, "heavy" if db > 0 else "light") in serious(recs)
+
+
+@pytest.mark.parametrize("band", SWEEP_BANDS)
+@pytest.mark.parametrize("db", [4.0, -4.0])
+def test_a_small_band_offset_is_never_a_serious_note(band, db):
+    _, recs = notes(shaped_mix(boost=(band, db)))
+    assert serious(recs) == []

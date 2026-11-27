@@ -1,3 +1,4 @@
 -r requirements.txt
 pytest
 httpx
+matplotlib>=3.8
